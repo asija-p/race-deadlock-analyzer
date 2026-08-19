@@ -10,7 +10,18 @@ find_package(Clang REQUIRED CONFIG)
 message(STATUS "Found LLVM ${LLVM_PACKAGE_VERSION}")
 message(STATUS "Found Clang: ${CLANG_INSTALL_PREFIX}")
 
-add_executable(analyzer src/main.cpp)
+add_executable(analyzer
+    src/main.cpp
+    src/frontend/CallVisitor.cpp
+    src/frontend/CFGPrinter.cpp
+    src/frontend/ASTConsumer.cpp
+)
 
-target_include_directories(analyzer PRIVATE ${LLVM_INCLUDE_DIRS} ${CLANG_INCLUDE_DIRS})
+target_include_directories(analyzer PRIVATE
+    ${LLVM_INCLUDE_DIRS}
+    ${CLANG_INCLUDE_DIRS}
+    src
+    src/frontend
+)
+
 target_link_libraries(analyzer PRIVATE clang-cpp LLVM)

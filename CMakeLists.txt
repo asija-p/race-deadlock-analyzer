@@ -16,6 +16,7 @@ add_executable(analyzer
     src/frontend/CFGPrinter.cpp
     src/frontend/ASTConsumer.cpp
     src/analysis/LockOrderAnalyzer.cpp
+    src/analysis/CycleDetector.cpp
 )
 
 target_include_directories(analyzer PRIVATE

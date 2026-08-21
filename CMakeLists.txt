@@ -15,6 +15,7 @@ add_executable(analyzer
     src/frontend/CallVisitor.cpp
     src/frontend/CFGPrinter.cpp
     src/frontend/ASTConsumer.cpp
+    src/analysis/LockOrderAnalyzer.cpp
 )
 
 target_include_directories(analyzer PRIVATE
@@ -22,6 +23,7 @@ target_include_directories(analyzer PRIVATE
     ${CLANG_INCLUDE_DIRS}
     src
     src/frontend
+    src/analysis
 )
 
 target_link_libraries(analyzer PRIVATE clang-cpp LLVM)

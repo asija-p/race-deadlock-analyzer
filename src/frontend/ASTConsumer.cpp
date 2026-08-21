@@ -1,6 +1,7 @@
 #include "ASTConsumer.h"
 #include "CallVisitor.h"
 #include "CFGPrinter.h"
+#include "../analysis/LockOrderAnalyzer.h"
 
 void DumpASTConsumer::HandleTranslationUnit(ASTContext &Context) {
     SourceManager &SM = Context.getSourceManager();
@@ -20,6 +21,12 @@ void DumpASTConsumer::HandleTranslationUnit(ASTContext &Context) {
             std::cout << "\n--- Funkcija: " << FD->getNameAsString() << " ---\n";
             Visitor.TraverseDecl(FD);
             PrintCFGForFunction(FD, Context);
+
+            std::vector<LockPair> Pairs = FindLockOrderPairs(FD, Context);
+            std::cout << "\n--- Parovi zakljucavanja ---\n";
+            for (const LockPair &P : Pairs) {
+                std::cout << P.first << " zakljucan pre " << P.second << "\n";
+            }
         }
     }
 }

@@ -24,9 +24,11 @@ void DumpASTConsumer::HandleTranslationUnit(ASTContext &Context) {
             Visitor.TraverseDecl(FD);
             PrintCFGForFunction(FD, Context);
 
-            std::vector<LockPair> Pairs = FindLockOrderPairs(FD, Context);
-            for (const LockPair &P : Pairs) {
-                AllPairs.push_back(P);
+            if (FD->getNameAsString() == "main") {
+                std::vector<LockPair> Pairs = FindLockOrderPairs(FD, Context);
+                for (const LockPair &P : Pairs) {
+                    AllPairs.push_back(P);
+                }
             }
         }
     }

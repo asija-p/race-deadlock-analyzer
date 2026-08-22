@@ -68,6 +68,24 @@ static std::set<std::string> ProcessBlock(
             continue;
         }
 
+        if (FuncName == "pthread_create") {
+            if (Call->getNumArgs() >= 3) {
+                const Expr *ThreadArg = Call->getArg(2)->IgnoreParenImpCasts();
+                if (auto *Cast = dyn_cast<CastExpr>(ThreadArg)) {
+                    ThreadArg = Cast->getSubExpr()->IgnoreParenImpCasts();
+                }
+                if (auto *Ref = dyn_cast<DeclRefExpr>(ThreadArg)) {
+                    if (auto *ThreadFD = dyn_cast<FunctionDecl>(Ref->getDecl())) {
+                        const FunctionDecl *ThreadDef = ThreadFD->getDefinition();
+                        if (ThreadDef && ThreadDef->hasBody() && !CallStack.count(ThreadDef)) {
+                            std::set<std::string> EmptyLocks;
+                            AnalyzeFunctionBody(ThreadDef, Context, EmptyLocks, Result, CallStack);
+                        }
+                    }
+                }
+            }
+            continue;
+        }
         // NOVO: poziv korisnicke funkcije (nije lock/unlock) - udji unutra
         const FunctionDecl *Definition = Callee->getDefinition();
         if (Definition && Definition->hasBody() && !CallStack.count(Definition)) {

@@ -2,8 +2,18 @@
 #include <clang/Analysis/CFG.h>
 #include <iostream>
 #include <set>
+#include <map>
 
 using namespace clang;
+
+// Napred deklarisemo, jer se ProcessBlock i AnalyzeFunctionBody
+// sada pozivaju medjusobno (ProcessBlock -> AnalyzeFunctionBody -> ProcessBlock -> ...)
+static std::set<std::string> AnalyzeFunctionBody(
+    const FunctionDecl *FD,
+    ASTContext &Context,
+    std::set<std::string> InitialLocks,
+    std::vector<LockPair> &Result,
+    std::set<const FunctionDecl*> &CallStack);
 
 // Pomocna funkcija - obradjuje jedan blok i njegove naredbe,
 // azurirajuci aktivne lockove i beleze parove.
@@ -11,7 +21,9 @@ using namespace clang;
 static std::set<std::string> ProcessBlock(
     const CFGBlock *Block,
     std::set<std::string> ActiveLocks,   // KOPIJA, namerno (ne referenca!)
-    std::vector<LockPair> &Result) {
+    std::vector<LockPair> &Result,
+    ASTContext &Context,
+    std::set<const FunctionDecl*> &CallStack) {
 
     for (const CFGElement &Elem : *Block) {
         auto CS = Elem.getAs<CFGStmt>();
@@ -25,77 +37,133 @@ static std::set<std::string> ProcessBlock(
         }
 
         const FunctionDecl *Callee = Call->getDirectCallee();
-        if (!Callee || Call->getNumArgs() == 0) {
+        if (!Callee) {
             continue;
-        }
-
-        // Izvlacimo ime mutexa (isti trik kao u CallVisitor)
-        std::string MutexName = "?";
-        const Expr *Arg = Call->getArg(0);
-        if (auto *Unary = dyn_cast<UnaryOperator>(Arg->IgnoreParenImpCasts())) {
-            Arg = Unary->getSubExpr();
-        }
-        if (auto *Ref = dyn_cast<DeclRefExpr>(Arg->IgnoreParenImpCasts())) {
-            MutexName = Ref->getDecl()->getNameAsString();
         }
 
         std::string FuncName = Callee->getNameAsString();
 
-        if (FuncName == "pthread_mutex_lock") {
-            for (const std::string &Prev : ActiveLocks) {
-                Result.push_back({Prev, MutexName});
+        if (FuncName == "pthread_mutex_lock" || FuncName == "pthread_mutex_unlock") {
+            if (Call->getNumArgs() == 0) {
+                continue;
             }
-            ActiveLocks.insert(MutexName);
-        } else if (FuncName == "pthread_mutex_unlock") {
-            ActiveLocks.erase(MutexName);
+            // Izvlacimo ime mutexa (isti trik kao u CallVisitor)
+            std::string MutexName = "?";
+            const Expr *Arg = Call->getArg(0);
+            if (auto *Unary = dyn_cast<UnaryOperator>(Arg->IgnoreParenImpCasts())) {
+                Arg = Unary->getSubExpr();
+            }
+            if (auto *Ref = dyn_cast<DeclRefExpr>(Arg->IgnoreParenImpCasts())) {
+                MutexName = Ref->getDecl()->getNameAsString();
+            }
+
+            if (FuncName == "pthread_mutex_lock") {
+                for (const std::string &Prev : ActiveLocks) {
+                    Result.push_back({Prev, MutexName});
+                }
+                ActiveLocks.insert(MutexName);
+            } else {
+                ActiveLocks.erase(MutexName);
+            }
+            continue;
         }
+
+        // NOVO: poziv korisnicke funkcije (nije lock/unlock) - udji unutra
+        const FunctionDecl *Definition = Callee->getDefinition();
+        if (Definition && Definition->hasBody() && !CallStack.count(Definition)) {
+            ActiveLocks = AnalyzeFunctionBody(
+                Definition, Context, ActiveLocks, Result, CallStack);
+        }
+        // Ako nema tela (npr. bibliotecka funkcija) ili je rekurzija -
+        // preskacemo, konzervativno pretpostavljamo da ne dira lockove
     }
 
     return ActiveLocks;
 }
 
-static void TraverseCFG(
-    const CFGBlock *Block,
-    std::set<std::string> ActiveLocks,
+// Racuna fixpoint nad CFG-om, pocevsi od InitialLocks na ulazu.
+// Vraca lockset na IZLAZU iz funkcije (lockset na ulazu u EXIT blok).
+static std::set<std::string> ComputeLockPairs(
+    const CFG &Cfg,
+    std::set<std::string> InitialLocks,
     std::vector<LockPair> &Result,
-    std::set<const CFGBlock*> &Visited) {
+    ASTContext &Context,
+    std::set<const FunctionDecl*> &CallStack) {
 
-    // Ako smo vec bili ovde, ne ulazimo ponovo (sprecava beskonacnu petlju)
-    if (Visited.count(Block)) {
-        return;
-    }
-    Visited.insert(Block);
+    std::map<const CFGBlock*, std::set<std::string>> LocksetAtEntry;
+    std::vector<const CFGBlock*> Worklist;
 
-    // Obradi naredbe u OVOM bloku, dobij azurirano stanje lock-ova
-    std::set<std::string> LocksAfterThisBlock = ProcessBlock(Block, ActiveLocks, Result);
+    const CFGBlock *Entry = &Cfg.getEntry();
+    LocksetAtEntry[Entry] = InitialLocks;
+    Worklist.push_back(Entry);
 
-    // Idi rekurzivno u SVAKI sledeci blok (Succs)
-    for (const CFGBlock::AdjacentBlock &Succ : Block->succs()) {
-        if (Succ.isReachable()) {
-            TraverseCFG(Succ.getReachableBlock(), LocksAfterThisBlock, Result, Visited);
+    while (!Worklist.empty()) {
+        const CFGBlock *Block = Worklist.back();
+        Worklist.pop_back();
+
+        std::set<std::string> InSet = LocksetAtEntry[Block];
+        std::set<std::string> OutSet = ProcessBlock(Block, InSet, Result, Context, CallStack);
+
+        for (const CFGBlock::AdjacentBlock &Succ : Block->succs()) {
+            if (!Succ.isReachable()) continue;
+            const CFGBlock *SuccBlock = Succ.getReachableBlock();
+
+            std::set<std::string> Merged = OutSet;
+            auto It = LocksetAtEntry.find(SuccBlock);
+            if (It != LocksetAtEntry.end()) {
+                Merged.insert(It->second.begin(), It->second.end());
+            }
+
+            if (It == LocksetAtEntry.end() || Merged != It->second) {
+                LocksetAtEntry[SuccBlock] = Merged;
+                Worklist.push_back(SuccBlock);
+            }
         }
     }
+
+    // Vracamo lockset na ulazu u EXIT blok - to je "izlazno stanje" cele funkcije
+    const CFGBlock *ExitBlock = &Cfg.getExit();
+    auto It = LocksetAtEntry.find(ExitBlock);
+    if (It != LocksetAtEntry.end()) {
+        return It->second;
+    }
+    return InitialLocks; // fallback, ne bi trebalo da se desi
 }
 
-std::vector<LockPair> FindLockOrderPairs(FunctionDecl *FD, ASTContext &Context) {
-    std::vector<LockPair> Result;
+// Analizira telo funkcije FD pocevsi od InitialLocks, dodaje parove u Result,
+// i vraca lockset koji vazi POSLE izvrsavanja cele funkcije (za pozivaoca).
+static std::set<std::string> AnalyzeFunctionBody(
+    const FunctionDecl *FD,
+    ASTContext &Context,
+    std::set<std::string> InitialLocks,
+    std::vector<LockPair> &Result,
+    std::set<const FunctionDecl*> &CallStack) {
 
     if (!FD->hasBody()) {
-        return Result;
+        return InitialLocks;
     }
 
     std::unique_ptr<CFG> Cfg = CFG::buildCFG(
         FD, FD->getBody(), &Context, CFG::BuildOptions());
 
     if (!Cfg) {
-        return Result;
+        return InitialLocks;
     }
 
-    const CFGBlock *Entry = &Cfg->getEntry();
-    std::set<std::string> InitialLocks;
-    std::set<const CFGBlock*> Visited;
+    CallStack.insert(FD);
+    std::set<std::string> OutLocks =
+        ComputeLockPairs(*Cfg, InitialLocks, Result, Context, CallStack);
+    CallStack.erase(FD);
 
-    TraverseCFG(Entry, InitialLocks, Result, Visited);
+    return OutLocks;
+}
+
+std::vector<LockPair> FindLockOrderPairs(FunctionDecl *FD, ASTContext &Context) {
+    std::vector<LockPair> Result;
+    std::set<const FunctionDecl*> CallStack;
+    std::set<std::string> InitialLocks;
+
+    AnalyzeFunctionBody(FD, Context, InitialLocks, Result, CallStack);
 
     return Result;
 }

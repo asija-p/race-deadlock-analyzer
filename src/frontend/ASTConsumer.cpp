@@ -36,19 +36,18 @@ void DumpASTConsumer::HandleTranslationUnit(ASTContext &Context) {
         std::cout << P.first << " -> " << P.second << "\n";
     }
 
-    std::vector<std::vector<std::string>> Cycles = FindCycles(AllPairs);
-
-    std::cout << "\n=== REZULTAT ANALIZE ===\n";
-    if (Cycles.empty()) {
-        std::cout << "Nije pronadjen deadlock rizik.\n";
-    } else {
-        std::cout << "UPOZORENJE: Moguci deadlock! Pronadjen ciklus u redosledu zakljucavanja:\n";
+    auto Cycles = FindCycles(AllPairs);
+    if (!Cycles.empty()) {
+        std::cout << "UPOZORENJE: Moguci deadlock!\n";
         for (const auto &Cycle : Cycles) {
-            for (const std::string &Mutex : Cycle) {
-                std::cout << Mutex << " ";
+            for (size_t i = 0; i < Cycle.size(); i++) {
+                std::cout << Cycle[i];
+                if (i + 1 < Cycle.size()) std::cout << " -> ";
             }
             std::cout << "\n";
         }
+    } else {
+        std::cout << "Nije pronadjen deadlock rizik.\n";
     }
 }
 

@@ -5,7 +5,7 @@
 #include <vector>
 #include <string>
 
-// Vraca listu ciklusa koje pronadje (svaki ciklus je lista imena mutexa po redu)
-std::vector<std::vector<std::string>> FindCycles(const std::vector<LockPair> &Pairs);
+// Sad vraca listu ciklusa, gde je svaki ciklus lista LockPair zapisa (ne stringova)
+std::vector<std::vector<LockPair>> FindCycles(const std::vector<LockPair> &Pairs);
 
 #endif

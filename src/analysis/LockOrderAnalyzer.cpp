@@ -59,7 +59,11 @@ static std::set<std::string> ProcessBlock(
 
             if (FuncName == "pthread_mutex_lock") {
                 for (const std::string &Prev : ActiveLocks) {
-                    Result.push_back({Prev, MutexName});
+                    LockPair P;
+                    P.From = Prev;
+                    P.To = MutexName;
+                    P.ContextLocks = ActiveLocks;
+                    Result.push_back(P);
                 }
                 ActiveLocks.insert(MutexName);
             } else {

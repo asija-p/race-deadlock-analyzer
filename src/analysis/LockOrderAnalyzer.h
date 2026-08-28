@@ -5,12 +5,23 @@
 #include <clang/AST/ASTContext.h>
 #include <vector>
 #include <string>
-#include <utility>
+#include <set>
 
 using namespace clang;
 
-// Par (A, B) znaci: mutex A je zakljucan pre mutexa B, na nekoj putanji
-using LockPair = std::pair<std::string, std::string>;
+// Umesto std::pair<string,string>, sad cuvamo i CEO lockset u trenutku nastanka
+struct LockPair {
+    std::string From;
+    std::string To;
+    std::set<std::string> ContextLocks;
+
+    // Potrebno da bi LockPair mogao da ide u std::set (za dedup)
+    bool operator<(const LockPair &Other) const {
+        if (From != Other.From) return From < Other.From;
+        if (To != Other.To) return To < Other.To;
+        return ContextLocks < Other.ContextLocks;
+    }
+};
 
 std::vector<LockPair> FindLockOrderPairs(FunctionDecl *FD, ASTContext &Context);
 

@@ -6,56 +6,62 @@
 
 using namespace clang;
 
-// Napred deklarisemo, jer se ProcessBlock i AnalyzeFunctionBody
-// sada pozivaju medjusobno (ProcessBlock -> AnalyzeFunctionBody -> ProcessBlock -> ...)
+static std::string ExtractVarName(const Expr *Arg) {
+    Arg = Arg->IgnoreParenImpCasts();
+    if (auto *Unary = dyn_cast<UnaryOperator>(Arg)) {
+        Arg = Unary->getSubExpr()->IgnoreParenImpCasts();
+    }
+    if (auto *Ref = dyn_cast<DeclRefExpr>(Arg)) {
+        return Ref->getDecl()->getNameAsString();
+    }
+    return "?";
+}
+
+// Prevodi lokalno ime (npr. parametar "m") u stvarno ime (npr. "m1"),
+// koristeci ParamMap. Ako ime nije u mapi, vraca ga nepromenjeno.
+static std::string ResolveName(const std::string &Name,
+                                 const std::map<std::string, std::string> &ParamMap) {
+    auto It = ParamMap.find(Name);
+    if (It != ParamMap.end()) {
+        return It->second;
+    }
+    return Name;
+}
+
 static std::set<std::string> AnalyzeFunctionBody(
     const FunctionDecl *FD,
     ASTContext &Context,
     std::set<std::string> InitialLocks,
     std::vector<LockPair> &Result,
-    std::set<const FunctionDecl*> &CallStack);
+    std::set<const FunctionDecl*> &CallStack,
+    const std::map<std::string, std::string> &ParamMap);
 
-// Pomocna funkcija - obradjuje jedan blok i njegove naredbe,
-// azurirajuci aktivne lockove i beleze parove.
-// Vraca AZURIRAN skup aktivnih lockova (posle prolaska kroz ovaj blok).
 static std::set<std::string> ProcessBlock(
     const CFGBlock *Block,
-    std::set<std::string> ActiveLocks,   // KOPIJA, namerno (ne referenca!)
+    std::set<std::string> ActiveLocks,
     std::vector<LockPair> &Result,
     ASTContext &Context,
-    std::set<const FunctionDecl*> &CallStack) {
+    std::set<const FunctionDecl*> &CallStack,
+    const std::map<std::string, std::string> &ParamMap) {
 
     for (const CFGElement &Elem : *Block) {
         auto CS = Elem.getAs<CFGStmt>();
-        if (!CS) {
-            continue;
-        }
+        if (!CS) continue;
         const Stmt *S = CS->getStmt();
         auto *Call = dyn_cast<CallExpr>(S);
-        if (!Call) {
-            continue;
-        }
+        if (!Call) continue;
 
         const FunctionDecl *Callee = Call->getDirectCallee();
-        if (!Callee) {
-            continue;
-        }
+        if (!Callee) continue;
 
         std::string FuncName = Callee->getNameAsString();
 
         if (FuncName == "pthread_mutex_lock" || FuncName == "pthread_mutex_unlock") {
-            if (Call->getNumArgs() == 0) {
-                continue;
-            }
-            // Izvlacimo ime mutexa (isti trik kao u CallVisitor)
-            std::string MutexName = "?";
-            const Expr *Arg = Call->getArg(0);
-            if (auto *Unary = dyn_cast<UnaryOperator>(Arg->IgnoreParenImpCasts())) {
-                Arg = Unary->getSubExpr();
-            }
-            if (auto *Ref = dyn_cast<DeclRefExpr>(Arg->IgnoreParenImpCasts())) {
-                MutexName = Ref->getDecl()->getNameAsString();
-            }
+            if (Call->getNumArgs() == 0) continue;
+
+            // NOVO: izvuci ime, pa ga prevedi kroz ParamMap ako treba
+            std::string RawName = ExtractVarName(Call->getArg(0));
+            std::string MutexName = ResolveName(RawName, ParamMap);
 
             if (FuncName == "pthread_mutex_lock") {
                 for (const std::string &Prev : ActiveLocks) {
@@ -83,34 +89,51 @@ static std::set<std::string> ProcessBlock(
                         const FunctionDecl *ThreadDef = ThreadFD->getDefinition();
                         if (ThreadDef && ThreadDef->hasBody() && !CallStack.count(ThreadDef)) {
                             std::set<std::string> EmptyLocks;
-                            AnalyzeFunctionBody(ThreadDef, Context, EmptyLocks, Result, CallStack);
+                            std::map<std::string, std::string> EmptyParamMap;
+                            AnalyzeFunctionBody(ThreadDef, Context, EmptyLocks, Result,
+                                                 CallStack, EmptyParamMap);
                         }
                     }
                 }
             }
             continue;
         }
-        // NOVO: poziv korisnicke funkcije (nije lock/unlock) - udji unutra
+
+        // Obican poziv korisnicke funkcije - udji unutra
         const FunctionDecl *Definition = Callee->getDefinition();
         if (Definition && Definition->hasBody() && !CallStack.count(Definition)) {
+
+            // NOVO: napravi novu ParamMap za POZVANU funkciju - uparuje
+            // njene parametre sa stvarnim argumentima OVOG poziva
+            std::map<std::string, std::string> NewParamMap;
+            unsigned NumParams = Definition->getNumParams();
+            for (unsigned i = 0; i < Call->getNumArgs() && i < NumParams; i++) {
+                std::string ArgName = ExtractVarName(Call->getArg(i));
+                // Ako je i sam argument bio parametar (nasledjen iz spoljasnjeg
+                // poziva), prevedi ga kroz TRENUTNU ParamMap pre upisa
+                ArgName = ResolveName(ArgName, ParamMap);
+
+                std::string ParamName = Definition->getParamDecl(i)->getNameAsString();
+                if (ArgName != "?") {
+                    NewParamMap[ParamName] = ArgName;
+                }
+            }
+
             ActiveLocks = AnalyzeFunctionBody(
-                Definition, Context, ActiveLocks, Result, CallStack);
+                Definition, Context, ActiveLocks, Result, CallStack, NewParamMap);
         }
-        // Ako nema tela (npr. bibliotecka funkcija) ili je rekurzija -
-        // preskacemo, konzervativno pretpostavljamo da ne dira lockove
     }
 
     return ActiveLocks;
 }
 
-// Racuna fixpoint nad CFG-om, pocevsi od InitialLocks na ulazu.
-// Vraca lockset na IZLAZU iz funkcije (lockset na ulazu u EXIT blok).
 static std::set<std::string> ComputeLockPairs(
     const CFG &Cfg,
     std::set<std::string> InitialLocks,
     std::vector<LockPair> &Result,
     ASTContext &Context,
-    std::set<const FunctionDecl*> &CallStack) {
+    std::set<const FunctionDecl*> &CallStack,
+    const std::map<std::string, std::string> &ParamMap) {
 
     std::map<const CFGBlock*, std::set<std::string>> LocksetAtEntry;
     std::vector<const CFGBlock*> Worklist;
@@ -124,7 +147,8 @@ static std::set<std::string> ComputeLockPairs(
         Worklist.pop_back();
 
         std::set<std::string> InSet = LocksetAtEntry[Block];
-        std::set<std::string> OutSet = ProcessBlock(Block, InSet, Result, Context, CallStack);
+        std::set<std::string> OutSet = ProcessBlock(
+            Block, InSet, Result, Context, CallStack, ParamMap);
 
         for (const CFGBlock::AdjacentBlock &Succ : Block->succs()) {
             if (!Succ.isReachable()) continue;
@@ -143,38 +167,31 @@ static std::set<std::string> ComputeLockPairs(
         }
     }
 
-    // Vracamo lockset na ulazu u EXIT blok - to je "izlazno stanje" cele funkcije
     const CFGBlock *ExitBlock = &Cfg.getExit();
     auto It = LocksetAtEntry.find(ExitBlock);
     if (It != LocksetAtEntry.end()) {
         return It->second;
     }
-    return InitialLocks; // fallback, ne bi trebalo da se desi
+    return InitialLocks;
 }
 
-// Analizira telo funkcije FD pocevsi od InitialLocks, dodaje parove u Result,
-// i vraca lockset koji vazi POSLE izvrsavanja cele funkcije (za pozivaoca).
 static std::set<std::string> AnalyzeFunctionBody(
     const FunctionDecl *FD,
     ASTContext &Context,
     std::set<std::string> InitialLocks,
     std::vector<LockPair> &Result,
-    std::set<const FunctionDecl*> &CallStack) {
+    std::set<const FunctionDecl*> &CallStack,
+    const std::map<std::string, std::string> &ParamMap) {
 
-    if (!FD->hasBody()) {
-        return InitialLocks;
-    }
+    if (!FD->hasBody()) return InitialLocks;
 
     std::unique_ptr<CFG> Cfg = CFG::buildCFG(
         FD, FD->getBody(), &Context, CFG::BuildOptions());
-
-    if (!Cfg) {
-        return InitialLocks;
-    }
+    if (!Cfg) return InitialLocks;
 
     CallStack.insert(FD);
-    std::set<std::string> OutLocks =
-        ComputeLockPairs(*Cfg, InitialLocks, Result, Context, CallStack);
+    std::set<std::string> OutLocks = ComputeLockPairs(
+        *Cfg, InitialLocks, Result, Context, CallStack, ParamMap);
     CallStack.erase(FD);
 
     return OutLocks;
@@ -184,8 +201,9 @@ std::vector<LockPair> FindLockOrderPairs(FunctionDecl *FD, ASTContext &Context) 
     std::vector<LockPair> Result;
     std::set<const FunctionDecl*> CallStack;
     std::set<std::string> InitialLocks;
+    std::map<std::string, std::string> EmptyParamMap;
 
-    AnalyzeFunctionBody(FD, Context, InitialLocks, Result, CallStack);
+    AnalyzeFunctionBody(FD, Context, InitialLocks, Result, CallStack, EmptyParamMap);
 
     return Result;
 }

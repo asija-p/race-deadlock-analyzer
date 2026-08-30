@@ -28,3 +28,7 @@ target_include_directories(analyzer PRIVATE
 )
 
 target_link_libraries(analyzer PRIVATE clang-cpp LLVM)
+
+add_executable(test_runner
+    tests/test_runner.cpp
+)

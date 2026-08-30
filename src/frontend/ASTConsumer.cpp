@@ -4,6 +4,8 @@
 #include "../analysis/LockOrderAnalyzer.h"
 #include "../analysis/CycleDetector.h"
 
+bool QuietMode = false;
+
 void DumpASTConsumer::HandleTranslationUnit(ASTContext &Context) {
     SourceManager &SM = Context.getSourceManager();
     TranslationUnitDecl *TU = Context.getTranslationUnitDecl();
@@ -20,9 +22,12 @@ void DumpASTConsumer::HandleTranslationUnit(ASTContext &Context) {
             if (!FD->hasBody()) {
                 continue;
             }
-            std::cout << "\n--- Funkcija: " << FD->getNameAsString() << " ---\n";
-            Visitor.TraverseDecl(FD);
-            PrintCFGForFunction(FD, Context);
+
+            if (!QuietMode) {
+                std::cout << "\n--- Funkcija: " << FD->getNameAsString() << " ---\n";
+                Visitor.TraverseDecl(FD);
+                PrintCFGForFunction(FD, Context);
+            }
 
             if (FD->getNameAsString() == "main") {
                 std::vector<LockPair> Pairs = FindLockOrderPairs(FD, Context);
@@ -33,12 +38,31 @@ void DumpASTConsumer::HandleTranslationUnit(ASTContext &Context) {
         }
     }
 
-    std::cout << "\n=== SVI parovi zakljucavanja (iz svih funkcija) ===\n";
-    for (const LockPair &P : AllPairs) {
-        std::cout << P.From << " -> " << P.To << "\n";
+    if (!QuietMode) {
+        std::cout << "\n=== SVI parovi zakljucavanja (iz svih funkcija) ===\n";
+        for (const LockPair &P : AllPairs) {
+            std::cout << P.From << " -> " << P.To << "\n";
+        }
     }
 
     auto Cycles = FindCycles(AllPairs);
+
+    if (QuietMode) {
+        if (!Cycles.empty()) {
+            std::cout << "DEADLOCK\n";
+            const auto &Cycle = Cycles[0];
+            for (size_t i = 0; i < Cycle.size(); i++) {
+                if (i > 0) std::cout << ",";
+                std::cout << Cycle[i].From << "->" << Cycle[i].To;
+            }
+            std::cout << "\n";
+        } else {
+            std::cout << "SAFE\n";
+        }
+        return;
+    }
+
+    // Puni, "lep" ispis za rucno pregledanje
     if (!Cycles.empty()) {
         std::cout << "UPOZORENJE: Moguci deadlock!\n";
         std::set<std::string> SeenSignatures;
@@ -50,7 +74,7 @@ void DumpASTConsumer::HandleTranslationUnit(ASTContext &Context) {
             Signature += Cycle.back().To;
 
             if (SeenSignatures.count(Signature)) {
-                continue;  // vec smo ovaj prikazali
+                continue;
             }
             SeenSignatures.insert(Signature);
 

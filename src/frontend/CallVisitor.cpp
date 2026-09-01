@@ -14,11 +14,24 @@ bool CallFinderVisitor::VisitCallExpr(CallExpr *Call) {
 
     std::string ArgName = "?";
     if (Call->getNumArgs() > 0) {
-        Expr *Arg = Call->getArg(0);
-        if (auto *Unary = dyn_cast<UnaryOperator>(Arg->IgnoreParenImpCasts())) {
-            Arg = Unary->getSubExpr();
+        Expr *Arg = Call->getArg(0)->IgnoreParenImpCasts();
+        if (auto *Unary = dyn_cast<UnaryOperator>(Arg)) {
+            Arg = Unary->getSubExpr()->IgnoreParenImpCasts();
         }
-        if (auto *Ref = dyn_cast<DeclRefExpr>(Arg->IgnoreParenImpCasts())) {
+
+        if (auto *ArrSub = dyn_cast<ArraySubscriptExpr>(Arg)) {
+            std::string ArrayName = "?";
+            const Expr *Base = ArrSub->getBase()->IgnoreParenImpCasts();
+            if (auto *BaseRef = dyn_cast<DeclRefExpr>(Base)) {
+                ArrayName = BaseRef->getDecl()->getNameAsString();
+            }
+            const Expr *IndexExpr = ArrSub->getIdx()->IgnoreParenImpCasts();
+            if (auto *IntLit = dyn_cast<IntegerLiteral>(IndexExpr)) {
+                ArgName = ArrayName + "[" + std::to_string(IntLit->getValue().getSExtValue()) + "]";
+            } else {
+                ArgName = ArrayName + "[?]";
+            }
+        } else if (auto *Ref = dyn_cast<DeclRefExpr>(Arg)) {
             ArgName = Ref->getDecl()->getNameAsString();
         }
     }

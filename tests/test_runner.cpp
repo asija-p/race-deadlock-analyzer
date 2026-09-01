@@ -83,6 +83,7 @@ int main(int argc, char** argv) {
         {"tests/thread_loop_example.c", false, {}},
         {"tests/thread_loop_deadlock.c", true, {{"m1","m2"}, {"m2","m1"}}},
         {"tests/trylock_example.c", true, {{"m1","m2"}, {"m2","m1"}}},
+        {"tests/array_locks_example.c", true, {{"locks[0]","locks[1]"}, {"locks[1]","locks[0]"}}},
     };
 
     std::string Filter;

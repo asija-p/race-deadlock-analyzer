@@ -11,6 +11,22 @@ static std::string ExtractVarName(const Expr *Arg) {
     if (auto *Unary = dyn_cast<UnaryOperator>(Arg)) {
         Arg = Unary->getSubExpr()->IgnoreParenImpCasts();
     }
+
+    // indeksiranje niza (npr. locks[0])
+    if (auto *ArrSub = dyn_cast<ArraySubscriptExpr>(Arg)) {
+        std::string ArrayName = "?";
+        const Expr *Base = ArrSub->getBase()->IgnoreParenImpCasts();
+        if (auto *BaseRef = dyn_cast<DeclRefExpr>(Base)) {
+            ArrayName = BaseRef->getDecl()->getNameAsString();
+        }
+
+        const Expr *IndexExpr = ArrSub->getIdx()->IgnoreParenImpCasts();
+        if (auto *IntLit = dyn_cast<IntegerLiteral>(IndexExpr)) {
+            return ArrayName + "[" + std::to_string(IntLit->getValue().getSExtValue()) + "]";
+        }
+        return ArrayName + "[?]";
+    }
+
     if (auto *Ref = dyn_cast<DeclRefExpr>(Arg)) {
         return Ref->getDecl()->getNameAsString();
     }

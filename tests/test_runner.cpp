@@ -80,6 +80,9 @@ int main(int argc, char** argv) {
         {"tests/branching_deadlock.c", true, {{"m2","m3"}, {"m3","m2"}}},
         {"tests/deadcode_example.c", false, {}},
         {"tests/wrapper_example.c", true, {{"m1","m2"}, {"m2","m1"}}},
+        {"tests/thread_loop_example.c", false, {}},
+        {"tests/thread_loop_deadlock.c", true, {{"m1","m2"}, {"m2","m1"}}},
+        {"tests/trylock_example.c", true, {{"m1","m2"}, {"m2","m1"}}},
     };
 
     std::string Filter;

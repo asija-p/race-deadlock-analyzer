@@ -56,14 +56,15 @@ static std::set<std::string> ProcessBlock(
 
         std::string FuncName = Callee->getNameAsString();
 
-        if (FuncName == "pthread_mutex_lock" || FuncName == "pthread_mutex_unlock") {
+        if (FuncName == "pthread_mutex_lock" || FuncName == "pthread_mutex_trylock" ||
+            FuncName == "pthread_mutex_unlock") {
             if (Call->getNumArgs() == 0) continue;
 
             // NOVO: izvuci ime, pa ga prevedi kroz ParamMap ako treba
             std::string RawName = ExtractVarName(Call->getArg(0));
             std::string MutexName = ResolveName(RawName, ParamMap);
 
-            if (FuncName == "pthread_mutex_lock") {
+            if (FuncName == "pthread_mutex_lock" || FuncName == "pthread_mutex_trylock") {
                 for (const std::string &Prev : ActiveLocks) {
                     LockPair P;
                     P.From = Prev;

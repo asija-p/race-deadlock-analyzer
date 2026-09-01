@@ -27,6 +27,17 @@ static std::string ExtractVarName(const Expr *Arg) {
         return ArrayName + "[?]";
     }
 
+    // pristup polju strukture (npr. res.lock1 ili p->lock1)
+    if (auto *Member = dyn_cast<MemberExpr>(Arg)) {
+        std::string BaseName = "?";
+        const Expr *Base = Member->getBase()->IgnoreParenImpCasts();
+        if (auto *BaseRef = dyn_cast<DeclRefExpr>(Base)) {
+            BaseName = BaseRef->getDecl()->getNameAsString();
+        }
+        std::string FieldName = Member->getMemberDecl()->getNameAsString();
+        return BaseName + "." + FieldName;
+    }
+
     if (auto *Ref = dyn_cast<DeclRefExpr>(Arg)) {
         return Ref->getDecl()->getNameAsString();
     }

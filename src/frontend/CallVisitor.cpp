@@ -31,6 +31,14 @@ bool CallFinderVisitor::VisitCallExpr(CallExpr *Call) {
             } else {
                 ArgName = ArrayName + "[?]";
             }
+        } else if (auto *Member = dyn_cast<MemberExpr>(Arg)) {
+            std::string BaseName = "?";
+            const Expr *Base = Member->getBase()->IgnoreParenImpCasts();
+            if (auto *BaseRef = dyn_cast<DeclRefExpr>(Base)) {
+                BaseName = BaseRef->getDecl()->getNameAsString();
+            }
+            std::string FieldName = Member->getMemberDecl()->getNameAsString();
+            ArgName = BaseName + "." + FieldName;
         } else if (auto *Ref = dyn_cast<DeclRefExpr>(Arg)) {
             ArgName = Ref->getDecl()->getNameAsString();
         }

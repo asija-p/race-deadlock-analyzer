@@ -75,16 +75,16 @@ static void PrintEdgeSet(const std::set<std::pair<std::string,std::string>> &S) 
 
 int main(int argc, char** argv) {
     std::vector<TestCase> Tests = {
-        {"tests/interprocedular_deadlock.c", true, {{"m1","m2"}, {"m2","m1"}}},
-        {"tests/common_lock_example.c", false, {}},
-        {"tests/branching_deadlock.c", true, {{"m2","m3"}, {"m3","m2"}}},
-        {"tests/deadcode_example.c", false, {}},
-        {"tests/wrapper_example.c", true, {{"m1","m2"}, {"m2","m1"}}},
-        {"tests/thread_loop_example.c", false, {}},
-        {"tests/thread_loop_deadlock.c", true, {{"m1","m2"}, {"m2","m1"}}},
-        {"tests/trylock_example.c", true, {{"m1","m2"}, {"m2","m1"}}},
-        {"tests/array_locks_example.c", true, {{"locks[0]","locks[1]"}, {"locks[1]","locks[0]"}}},
-        {"tests/struct_locks_example.c", true, {{"res.lock1","res.lock2"}, {"res.lock2","res.lock1"}}},
+        {"tests/deadlock/interprocedural_deadlock.c", true, {{"m1","m2"}, {"m2","m1"}}},
+        {"tests/safe/common_lock_safe.c", false, {}},
+        {"tests/deadlock/branching_deadlock.c", true, {{"m2","m3"}, {"m3","m2"}}},
+        {"tests/safe/deadcode_safe.c", false, {}},
+        {"tests/deadlock/wrapper_deadlock.c", true, {{"m1","m2"}, {"m2","m1"}}},
+        {"tests/safe/thread_loop_safe.c", false, {}},
+        {"tests/deadlock/thread_loop_deadlock.c", true, {{"m1","m2"}, {"m2","m1"}}},
+        {"tests/deadlock/trylock_deadlock.c", true, {{"m1","m2"}, {"m2","m1"}}},
+        {"tests/deadlock/array_locks_deadlock.c", true, {{"locks[0]","locks[1]"}, {"locks[1]","locks[0]"}}},
+        {"tests/deadlock/struct_locks_deadlock.c", true, {{"res.lock1","res.lock2"}, {"res.lock2","res.lock1"}}},
     };
 
     std::string Filter;

@@ -49,8 +49,8 @@ static bool HasCommonLock(const std::vector<LockPair> &Cycle) {
         for (size_t j = i + 1; j < Cycle.size(); j++) {
             std::set<std::string> Intersection;
             std::set_intersection(
-                Cycle[i].ContextLocks.begin(), Cycle[i].ContextLocks.end(),
-                Cycle[j].ContextLocks.begin(), Cycle[j].ContextLocks.end(),
+                Cycle[i].MustContextLocks.begin(), Cycle[i].MustContextLocks.end(),
+                Cycle[j].MustContextLocks.begin(), Cycle[j].MustContextLocks.end(),
                 std::inserter(Intersection, Intersection.begin()));
 
             if (Intersection.empty()) {

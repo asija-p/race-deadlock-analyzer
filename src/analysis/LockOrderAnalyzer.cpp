@@ -3,6 +3,8 @@
 #include <iostream>
 #include <set>
 #include <map>
+#include <algorithm>
+#include <iterator>
 
 using namespace clang;
 
@@ -12,7 +14,6 @@ static std::string ExtractVarName(const Expr *Arg) {
         Arg = Unary->getSubExpr()->IgnoreParenImpCasts();
     }
 
-    // indeksiranje niza (npr. locks[0])
     if (auto *ArrSub = dyn_cast<ArraySubscriptExpr>(Arg)) {
         std::string ArrayName = "?";
         const Expr *Base = ArrSub->getBase()->IgnoreParenImpCasts();
@@ -27,7 +28,6 @@ static std::string ExtractVarName(const Expr *Arg) {
         return ArrayName + "[?]";
     }
 
-    // pristup polju strukture (npr. res.lock1 ili p->lock1)
     if (auto *Member = dyn_cast<MemberExpr>(Arg)) {
         std::string BaseName = "?";
         const Expr *Base = Member->getBase()->IgnoreParenImpCasts();
@@ -44,8 +44,6 @@ static std::string ExtractVarName(const Expr *Arg) {
     return "?";
 }
 
-// Prevodi lokalno ime (npr. parametar "m") u stvarno ime (npr. "m1"),
-// koristeci ParamMap. Ako ime nije u mapi, vraca ga nepromenjeno.
 static std::string ResolveName(const std::string &Name,
                                  const std::map<std::string, std::string> &ParamMap) {
     auto It = ParamMap.find(Name);
@@ -55,20 +53,39 @@ static std::string ResolveName(const std::string &Name,
     return Name;
 }
 
-static std::set<std::string> AnalyzeFunctionBody(
+// LockState nosi OBA stanja zajedno kroz analizu:
+// May  = sta je MOGLO biti zakljucano (union na spajanju grana)
+// Must = sta je SIGURNO bilo zakljucano (presek na spajanju grana)
+struct LockState {
+    std::set<std::string> May;
+    std::set<std::string> Must;
+
+    bool operator==(const LockState &Other) const {
+        return May == Other.May && Must == Other.Must;
+    }
+    bool operator!=(const LockState &Other) const {
+        return !(*this == Other);
+    }
+};
+
+// CallStack pamti KOJIM LockState-om smo POSLEDNJI PUT usli u svaku funkciju
+// trenutno "na stack-u" - omogucava fixpoint pristup rekurziji.
+using CallStackMap = std::map<const FunctionDecl*, LockState>;
+
+static LockState AnalyzeFunctionBody(
     const FunctionDecl *FD,
     ASTContext &Context,
-    std::set<std::string> InitialLocks,
+    LockState InitialState,
     std::vector<LockPair> &Result,
-    std::set<const FunctionDecl*> &CallStack,
+    CallStackMap &CallStack,
     const std::map<std::string, std::string> &ParamMap);
 
-static std::set<std::string> ProcessBlock(
+static LockState ProcessBlock(
     const CFGBlock *Block,
-    std::set<std::string> ActiveLocks,
+    LockState State,
     std::vector<LockPair> &Result,
     ASTContext &Context,
-    std::set<const FunctionDecl*> &CallStack,
+    CallStackMap &CallStack,
     const std::map<std::string, std::string> &ParamMap) {
 
     for (const CFGElement &Elem : *Block) {
@@ -87,21 +104,26 @@ static std::set<std::string> ProcessBlock(
             FuncName == "pthread_mutex_unlock") {
             if (Call->getNumArgs() == 0) continue;
 
-            // NOVO: izvuci ime, pa ga prevedi kroz ParamMap ako treba
             std::string RawName = ExtractVarName(Call->getArg(0));
             std::string MutexName = ResolveName(RawName, ParamMap);
 
             if (FuncName == "pthread_mutex_lock" || FuncName == "pthread_mutex_trylock") {
-                for (const std::string &Prev : ActiveLocks) {
+                // Pravimo parove iz MAY skupa (sound - ne sme propustiti nijednu
+                // mogucu ivicu), ali svaki par nosi i MUST kontekst za kasniji
+                // common-locks filter.
+                for (const std::string &Prev : State.May) {
                     LockPair P;
                     P.From = Prev;
                     P.To = MutexName;
-                    P.ContextLocks = ActiveLocks;
+                    P.ContextLocks = State.May;
+                    P.MustContextLocks = State.Must;
                     Result.push_back(P);
                 }
-                ActiveLocks.insert(MutexName);
+                State.May.insert(MutexName);
+                State.Must.insert(MutexName);
             } else {
-                ActiveLocks.erase(MutexName);
+                State.May.erase(MutexName);
+                State.Must.erase(MutexName);
             }
             continue;
         }
@@ -115,11 +137,16 @@ static std::set<std::string> ProcessBlock(
                 if (auto *Ref = dyn_cast<DeclRefExpr>(ThreadArg)) {
                     if (auto *ThreadFD = dyn_cast<FunctionDecl>(Ref->getDecl())) {
                         const FunctionDecl *ThreadDef = ThreadFD->getDefinition();
-                        if (ThreadDef && ThreadDef->hasBody() && !CallStack.count(ThreadDef)) {
-                            std::set<std::string> EmptyLocks;
-                            std::map<std::string, std::string> EmptyParamMap;
-                            AnalyzeFunctionBody(ThreadDef, Context, EmptyLocks, Result,
-                                                 CallStack, EmptyParamMap);
+                        if (ThreadDef && ThreadDef->hasBody()) {
+                            LockState EmptyState;
+                            auto It = CallStack.find(ThreadDef);
+                            bool ShouldEnter = (It == CallStack.end()) ||
+                                                (It->second != EmptyState);
+                            if (ShouldEnter) {
+                                std::map<std::string, std::string> EmptyParamMap;
+                                AnalyzeFunctionBody(ThreadDef, Context, EmptyState, Result,
+                                                     CallStack, EmptyParamMap);
+                            }
                         }
                     }
                 }
@@ -127,18 +154,13 @@ static std::set<std::string> ProcessBlock(
             continue;
         }
 
-        // Obican poziv korisnicke funkcije - udji unutra
         const FunctionDecl *Definition = Callee->getDefinition();
-        if (Definition && Definition->hasBody() && !CallStack.count(Definition)) {
+        if (Definition && Definition->hasBody()) {
 
-            // NOVO: napravi novu ParamMap za POZVANU funkciju - uparuje
-            // njene parametre sa stvarnim argumentima OVOG poziva
             std::map<std::string, std::string> NewParamMap;
             unsigned NumParams = Definition->getNumParams();
             for (unsigned i = 0; i < Call->getNumArgs() && i < NumParams; i++) {
                 std::string ArgName = ExtractVarName(Call->getArg(i));
-                // Ako je i sam argument bio parametar (nasledjen iz spoljasnjeg
-                // poziva), prevedi ga kroz TRENUTNU ParamMap pre upisa
                 ArgName = ResolveName(ArgName, ParamMap);
 
                 std::string ParamName = Definition->getParamDecl(i)->getNameAsString();
@@ -147,91 +169,122 @@ static std::set<std::string> ProcessBlock(
                 }
             }
 
-            ActiveLocks = AnalyzeFunctionBody(
-                Definition, Context, ActiveLocks, Result, CallStack, NewParamMap);
+            auto It = CallStack.find(Definition);
+            bool ShouldEnter = (It == CallStack.end()) ||
+                                (It->second != State);
+
+            if (ShouldEnter) {
+                State = AnalyzeFunctionBody(
+                    Definition, Context, State, Result, CallStack, NewParamMap);
+            }
         }
     }
 
-    return ActiveLocks;
+    return State;
 }
 
-static std::set<std::string> ComputeLockPairs(
+static LockState ComputeLockPairs(
     const CFG &Cfg,
-    std::set<std::string> InitialLocks,
+    LockState InitialState,
     std::vector<LockPair> &Result,
     ASTContext &Context,
-    std::set<const FunctionDecl*> &CallStack,
+    CallStackMap &CallStack,
     const std::map<std::string, std::string> &ParamMap) {
 
-    std::map<const CFGBlock*, std::set<std::string>> LocksetAtEntry;
+    std::map<const CFGBlock*, LockState> StateAtEntry;
+    std::map<const CFGBlock*, bool> Visited;
     std::vector<const CFGBlock*> Worklist;
 
     const CFGBlock *Entry = &Cfg.getEntry();
-    LocksetAtEntry[Entry] = InitialLocks;
+    StateAtEntry[Entry] = InitialState;
+    Visited[Entry] = true;
     Worklist.push_back(Entry);
 
     while (!Worklist.empty()) {
         const CFGBlock *Block = Worklist.back();
         Worklist.pop_back();
 
-        std::set<std::string> InSet = LocksetAtEntry[Block];
-        std::set<std::string> OutSet = ProcessBlock(
-            Block, InSet, Result, Context, CallStack, ParamMap);
+        LockState InState = StateAtEntry[Block];
+        LockState OutState = ProcessBlock(
+            Block, InState, Result, Context, CallStack, ParamMap);
 
         for (const CFGBlock::AdjacentBlock &Succ : Block->succs()) {
             if (!Succ.isReachable()) continue;
             const CFGBlock *SuccBlock = Succ.getReachableBlock();
 
-            std::set<std::string> Merged = OutSet;
-            auto It = LocksetAtEntry.find(SuccBlock);
-            if (It != LocksetAtEntry.end()) {
-                Merged.insert(It->second.begin(), It->second.end());
+            LockState NewState;
+            if (!Visited[SuccBlock]) {
+                // Prvi put stizemo ovde - preuzmi stanje kakvo jeste
+                NewState = OutState;
+                Visited[SuccBlock] = true;
+            } else {
+                // Vec smo bili ovde - May: UNIJA, Must: PRESEK sa postojecim
+                const LockState &Existing = StateAtEntry[SuccBlock];
+                NewState.May = OutState.May;
+                NewState.May.insert(Existing.May.begin(), Existing.May.end());
+
+                std::set_intersection(
+                    OutState.Must.begin(), OutState.Must.end(),
+                    Existing.Must.begin(), Existing.Must.end(),
+                    std::inserter(NewState.Must, NewState.Must.begin()));
             }
 
-            if (It == LocksetAtEntry.end() || Merged != It->second) {
-                LocksetAtEntry[SuccBlock] = Merged;
+            if (StateAtEntry.find(SuccBlock) == StateAtEntry.end() ||
+                NewState != StateAtEntry[SuccBlock]) {
+                StateAtEntry[SuccBlock] = NewState;
                 Worklist.push_back(SuccBlock);
             }
         }
     }
 
     const CFGBlock *ExitBlock = &Cfg.getExit();
-    auto It = LocksetAtEntry.find(ExitBlock);
-    if (It != LocksetAtEntry.end()) {
+    auto It = StateAtEntry.find(ExitBlock);
+    if (It != StateAtEntry.end()) {
         return It->second;
     }
-    return InitialLocks;
+    return InitialState;
 }
 
-static std::set<std::string> AnalyzeFunctionBody(
+static LockState AnalyzeFunctionBody(
     const FunctionDecl *FD,
     ASTContext &Context,
-    std::set<std::string> InitialLocks,
+    LockState InitialState,
     std::vector<LockPair> &Result,
-    std::set<const FunctionDecl*> &CallStack,
+    CallStackMap &CallStack,
     const std::map<std::string, std::string> &ParamMap) {
 
-    if (!FD->hasBody()) return InitialLocks;
+    if (!FD->hasBody()) return InitialState;
 
     std::unique_ptr<CFG> Cfg = CFG::buildCFG(
         FD, FD->getBody(), &Context, CFG::BuildOptions());
-    if (!Cfg) return InitialLocks;
+    if (!Cfg) return InitialState;
 
-    CallStack.insert(FD);
-    std::set<std::string> OutLocks = ComputeLockPairs(
-        *Cfg, InitialLocks, Result, Context, CallStack, ParamMap);
-    CallStack.erase(FD);
+    bool HadPrevious = CallStack.count(FD) > 0;
+    LockState PreviousValue;
+    if (HadPrevious) {
+        PreviousValue = CallStack[FD];
+    }
 
-    return OutLocks;
+    CallStack[FD] = InitialState;
+    LockState OutState = ComputeLockPairs(
+        *Cfg, InitialState, Result, Context, CallStack, ParamMap);
+
+    if (HadPrevious) {
+        CallStack[FD] = PreviousValue;
+    } else {
+        CallStack.erase(FD);
+    }
+
+    return OutState;
 }
 
 std::vector<LockPair> FindLockOrderPairs(FunctionDecl *FD, ASTContext &Context) {
     std::vector<LockPair> Result;
-    std::set<const FunctionDecl*> CallStack;
-    std::set<std::string> InitialLocks;
+    CallStackMap CallStack;
+    LockState InitialState;
     std::map<std::string, std::string> EmptyParamMap;
 
-    AnalyzeFunctionBody(FD, Context, InitialLocks, Result, CallStack, EmptyParamMap);
+    AnalyzeFunctionBody(FD, Context, InitialState, Result, CallStack, EmptyParamMap);
 
     return Result;
 }

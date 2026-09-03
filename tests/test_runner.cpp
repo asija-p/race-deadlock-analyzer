@@ -87,6 +87,7 @@ int main(int argc, char** argv) {
         {"tests/deadlock/struct_locks_deadlock.c", true, {{"res.lock1","res.lock2"}, {"res.lock2","res.lock1"}}},
         {"tests/deadlock/must_lockset_gap.c", true, {{"m2","m3"}, {"m3","m2"}}},
         {"tests/deadlock/nested_wrapper_deadlock.c", true, {{"m1","m2"}, {"m2","m1"}}},
+        {"tests/deadlock/switch_deadlock.c", true, {{"m1","m2"}, {"m2","m1"}}},
     };
 
     std::string Filter;

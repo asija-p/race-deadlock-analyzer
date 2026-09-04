@@ -45,16 +45,17 @@ static ActualResult ParseAnalyzerOutput(const std::string &Output) {
     if (FirstLine == "DEADLOCK") {
         Res.HasDeadlock = true;
         std::string EdgeLine;
-        std::getline(Stream, EdgeLine);
-
-        std::istringstream EdgeStream(EdgeLine);
-        std::string OnePair;
-        while (std::getline(EdgeStream, OnePair, ',')) {
-            size_t ArrowPos = OnePair.find("->");
-            if (ArrowPos != std::string::npos) {
-                std::string From = OnePair.substr(0, ArrowPos);
-                std::string To = OnePair.substr(ArrowPos + 2);
-                Res.Edges.insert({From, To});
+        while (std::getline(Stream, EdgeLine)) {
+            if (EdgeLine.empty()) continue;
+            std::istringstream EdgeStream(EdgeLine);
+            std::string OnePair;
+            while (std::getline(EdgeStream, OnePair, ',')) {
+                size_t ArrowPos = OnePair.find("->");
+                if (ArrowPos != std::string::npos) {
+                    std::string From = OnePair.substr(0, ArrowPos);
+                    std::string To = OnePair.substr(ArrowPos + 2);
+                    Res.Edges.insert({From, To});
+                }
             }
         }
     }
@@ -88,6 +89,7 @@ int main(int argc, char** argv) {
         {"tests/deadlock/must_lockset_gap.c", true, {{"m2","m3"}, {"m3","m2"}}},
         {"tests/deadlock/nested_wrapper_deadlock.c", true, {{"m1","m2"}, {"m2","m1"}}},
         {"tests/deadlock/switch_deadlock.c", true, {{"m1","m2"}, {"m2","m1"}}},
+        {"tests/deadlock/disconnected_clusters_deadlock.c", true, {{"a1","a2"}, {"a2","a1"}, {"b1","b2"}, {"b2","b1"}}},
     };
 
     std::string Filter;

@@ -50,17 +50,18 @@ void DumpASTConsumer::HandleTranslationUnit(ASTContext &Context) {
     if (QuietMode) {
         if (!Cycles.empty()) {
             std::cout << "DEADLOCK\n";
-            const auto &Cycle = Cycles[0];
-            for (size_t i = 0; i < Cycle.size(); i++) {
-                if (i > 0) std::cout << ",";
-                std::cout << Cycle[i].From << "->" << Cycle[i].To;
+            for (const auto &Cycle : Cycles) {
+                for (size_t i = 0; i < Cycle.size(); i++) {
+                    if (i > 0) std::cout << ",";
+                    std::cout << Cycle[i].From << "->" << Cycle[i].To;
+                }
+                std::cout << "\n";
             }
-            std::cout << "\n";
         } else {
             std::cout << "SAFE\n";
         }
         return;
-    }
+    }   
 
     // Puni, "lep" ispis za rucno pregledanje
     if (!Cycles.empty()) {

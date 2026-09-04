@@ -90,6 +90,7 @@ int main(int argc, char** argv) {
         {"tests/deadlock/nested_wrapper_deadlock.c", true, {{"m1","m2"}, {"m2","m1"}}},
         {"tests/deadlock/switch_deadlock.c", true, {{"m1","m2"}, {"m2","m1"}}},
         {"tests/deadlock/disconnected_clusters_deadlock.c", true, {{"a1","a2"}, {"a2","a1"}, {"b1","b2"}, {"b2","b1"}}},
+        {"tests/deadlock/conditional_unlock_deadlock.c", true, {{"m1","m2"}, {"m2","m1"}}},
     };
 
     std::string Filter;

@@ -9,12 +9,22 @@
 
 using namespace clang;
 
+// Mod u kom je brava drzana/akvirirana.
+// Write = ekskluzivno (mutex, spinlock, rwlock wrlock).
+// Read  = deljeno (rwlock rdlock) - dva Read-a se NE sudaraju medjusobno.
+enum class LockKind {
+    Read,
+    Write
+};
+
 // Umesto std::pair<string,string>, sad cuvamo i CEO lockset u trenutku nastanka.
 // ContextLocks     = MAY-lockset (sta je MOGLO biti zakljucano, union na granama)
 // MustContextLocks = MUST-lockset (sta je SIGURNO bilo zakljucano, presek na granama)
 struct LockPair {
     std::string From;
     std::string To;
+    LockKind FromKind = LockKind::Write;   // NOVO - mod u kom je "From" bila drzana
+    LockKind ToKind = LockKind::Write;     // NOVO - mod u kom se "To" akvirira
     std::set<std::string> ContextLocks;
     std::set<std::string> MustContextLocks;
     std::string ThreadId;   // NOVO - koja "root" nit je napravila ovaj par
@@ -22,7 +32,11 @@ struct LockPair {
     bool operator<(const LockPair &Other) const {
         if (From != Other.From) return From < Other.From;
         if (To != Other.To) return To < Other.To;
-        return ContextLocks < Other.ContextLocks;
+        if (FromKind != Other.FromKind) return FromKind < Other.FromKind;
+        if (ToKind != Other.ToKind) return ToKind < Other.ToKind;
+        if (ContextLocks != Other.ContextLocks) return ContextLocks < Other.ContextLocks;
+        if (MustContextLocks != Other.MustContextLocks) return MustContextLocks < Other.MustContextLocks;
+        return ThreadId < Other.ThreadId;
     }
 };
 

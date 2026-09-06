@@ -79,6 +79,29 @@ static bool HasCommonLock(const std::vector<LockPair> &Cycle) {
     return true;
 }
 
+// Za svaki deljeni cvor izmedju dve UZASTOPNE ivice ciklusa, proverava da li
+// se te dve strane uopste MOGU sudariti. Na cvoru gde se Cycle[i] zavrsava
+// (Cycle[i].To) i Cycle[i+1] pocinje (Cycle[i+1].From), Cycle[i] pokusava da
+// AKVIRIRA taj cvor (mod = Cycle[i].ToKind) dok ga Cycle[i+1] vec DRZI
+// (mod = Cycle[i+1].FromKind). Dva citaoca (Read/Read) se NIKAD ne sudaraju -
+// pa ako je ijedan cvor u ciklusu bas takav (oba Read), ciklus fizicki ne moze
+// da nastane kao pravi deadlock, cak i ako ostale provere (zajednicka brava,
+// razlicita nit) prodju.
+static bool AllNodesCanConflict(const std::vector<LockPair> &Cycle) {
+    size_t N = Cycle.size();
+    if (N == 0) return false;
+
+    for (size_t i = 0; i < N; i++) {
+        size_t Next = (i + 1) % N;
+        bool BothRead = (Cycle[i].ToKind == LockKind::Read &&
+                          Cycle[Next].FromKind == LockKind::Read);
+        if (BothRead) {
+            return false;
+        }
+    }
+    return true;
+}
+
 std::vector<std::vector<LockPair>> FindCycles(const std::vector<LockPair> &Pairs) {
     // Dedup SAMO na osnovu potpunog poklapanja (From, To, ContextLocks I
     // MustContextLocks) - ne spajamo (presecamo) Must vrednosti razlicitih
@@ -113,7 +136,7 @@ std::vector<std::vector<LockPair>> FindCycles(const std::vector<LockPair> &Pairs
             continue;  // lazan alarm - ista nit, ne moze biti pravi deadlock
         }
 
-        if (!HasCommonLock(Cycle)) {
+        if (!HasCommonLock(Cycle) && AllNodesCanConflict(Cycle)) {
             RealCycles.push_back(Cycle);
         }
     }

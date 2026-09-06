@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <iterator>
 #include <clang/Basic/SourceManager.h>
+#include <clang/AST/RecursiveASTVisitor.h>
 
 using namespace clang;
 
@@ -55,8 +56,8 @@ static std::string ResolveName(const std::string &Name,
 }
 
 struct LockState {
-    std::set<std::string> May;
-    std::set<std::string> Must;
+    std::map<std::string, LockKind> May;
+    std::map<std::string, LockKind> Must;
 
     bool operator==(const LockState &Other) const {
         return May == Other.May && Must == Other.Must;
@@ -66,7 +67,61 @@ struct LockState {
     }
 };
 
-using CallStackMap = std::map<const FunctionDecl*, LockState>;
+// Vraca skup imena brava iz May/Must mape (za popunjavanje LockPair::ContextLocks,
+// koji ostaje set<string> - ne zanima nas mod za taj deo, samo koja su imena bila u igri).
+static std::set<std::string> KeysOf(const std::map<std::string, LockKind> &M) {
+    std::set<std::string> Keys;
+    for (const auto &Entry : M) {
+        Keys.insert(Entry.first);
+    }
+    return Keys;
+}
+
+// Spaja Source u Target (May-lockset, unija na granama CFG-a).
+// Ako je ista brava prisutna na obe grane ali sa RAZLICITIM modom (npr. Read na
+// jednoj grani, Write na drugoj), konzervativno je tretiramo kao Write - bolje
+// lazni pozitiv nego da progutamo mogucu ekskluzivnu akviziciju.
+static void MergeMayInto(std::map<std::string, LockKind> &Target,
+                          const std::map<std::string, LockKind> &Source) {
+    for (const auto &Entry : Source) {
+        auto It = Target.find(Entry.first);
+        if (It == Target.end()) {
+            Target[Entry.first] = Entry.second;
+        } else if (It->second != Entry.second) {
+            It->second = LockKind::Write;
+        }
+    }
+}
+
+// Presek Must-lockset-a dve grane. Brava ostaje u preseku samo ako je SIGURNO
+// drzana na obe grane; ako je mod razlicit izmedju grana, konzervativno Write.
+static std::map<std::string, LockKind> IntersectMust(
+    const std::map<std::string, LockKind> &A,
+    const std::map<std::string, LockKind> &B) {
+    std::map<std::string, LockKind> Result;
+    for (const auto &Entry : A) {
+        auto It = B.find(Entry.first);
+        if (It != B.end()) {
+            Result[Entry.first] = (Entry.second == It->second) ? Entry.second : LockKind::Write;
+        }
+    }
+    return Result;
+}
+
+
+struct CallContext {
+    LockState State;
+    std::map<std::string, std::string> ParamMap;
+
+    bool operator==(const CallContext &Other) const {
+        return State == Other.State && ParamMap == Other.ParamMap;
+    }
+    bool operator!=(const CallContext &Other) const {
+        return !(*this == Other);
+    }
+};
+
+using CallStackMap = std::map<const FunctionDecl*, CallContext>;
 
 static LockState AnalyzeFunctionBody(
     const FunctionDecl *FD,
@@ -98,25 +153,38 @@ static LockState ProcessBlock(
 
         std::string FuncName = Callee->getNameAsString();
 
-        if (FuncName == "pthread_mutex_lock" || FuncName == "pthread_mutex_trylock" ||
-            FuncName == "pthread_mutex_unlock") {
+        // Write-mod brave: mutex i spinlock su UVEK ekskluzivni; rwlock wrlock isto.
+        bool IsWriteLock = (FuncName == "pthread_mutex_lock" || FuncName == "pthread_mutex_trylock" ||
+                             FuncName == "pthread_spin_lock" || FuncName == "pthread_spin_trylock" ||
+                             FuncName == "pthread_rwlock_wrlock" || FuncName == "pthread_rwlock_trywrlock");
+        // Read-mod: samo rwlock rdlock - deljena brava, ne sudara se sa drugim Read-om.
+        bool IsReadLock = (FuncName == "pthread_rwlock_rdlock" || FuncName == "pthread_rwlock_tryrdlock");
+        bool IsUnlock = (FuncName == "pthread_mutex_unlock" ||
+                          FuncName == "pthread_spin_unlock" ||
+                          FuncName == "pthread_rwlock_unlock");
+
+        if (IsWriteLock || IsReadLock || IsUnlock) {
             if (Call->getNumArgs() == 0) continue;
 
             std::string RawName = ExtractVarName(Call->getArg(0));
             std::string MutexName = ResolveName(RawName, ParamMap);
 
-            if (FuncName == "pthread_mutex_lock" || FuncName == "pthread_mutex_trylock") {
-                for (const std::string &Prev : State.May) {
+            if (IsWriteLock || IsReadLock) {
+                LockKind NewKind = IsWriteLock ? LockKind::Write : LockKind::Read;
+
+                for (const auto &PrevEntry : State.May) {
                     LockPair P;
-                    P.From = Prev;
+                    P.From = PrevEntry.first;
                     P.To = MutexName;
-                    P.ContextLocks = State.May;
-                    P.MustContextLocks = State.Must;
+                    P.FromKind = PrevEntry.second;
+                    P.ToKind = NewKind;
+                    P.ContextLocks = KeysOf(State.May);
+                    P.MustContextLocks = KeysOf(State.Must);
                     P.ThreadId = ThreadId;
                     Result.push_back(P);
                 }
-                State.May.insert(MutexName);
-                State.Must.insert(MutexName);
+                State.May[MutexName] = NewKind;
+                State.Must[MutexName] = NewKind;
             } else {
                 State.May.erase(MutexName);
                 State.Must.erase(MutexName);
@@ -135,12 +203,12 @@ static LockState ProcessBlock(
                         const FunctionDecl *ThreadDef = ThreadFD->getDefinition();
                         if (ThreadDef && ThreadDef->hasBody()) {
                             LockState EmptyState;
+                            std::map<std::string, std::string> EmptyParamMap;
+                            CallContext EmptyContext{EmptyState, EmptyParamMap};
                             auto It = CallStack.find(ThreadDef);
                             bool ShouldEnter = (It == CallStack.end()) ||
-                                                (It->second != EmptyState);
+                                                (It->second != EmptyContext);
                             if (ShouldEnter) {
-                                std::map<std::string, std::string> EmptyParamMap;
-
                                 // NOVO: ThreadId = MESTO poziva (linija), ne ime funkcije
                                 unsigned Line = Context.getSourceManager()
                                                     .getSpellingLineNumber(Call->getBeginLoc());
@@ -171,9 +239,10 @@ static LockState ProcessBlock(
                 }
             }
 
+            CallContext NewContext{State, NewParamMap};
             auto It = CallStack.find(Definition);
             bool ShouldEnter = (It == CallStack.end()) ||
-                                (It->second != State);
+                                (It->second != NewContext);
 
             if (ShouldEnter) {
                 // Obican poziv - NASLEDJUJE isti ThreadId (deo je iste niti)
@@ -223,12 +292,8 @@ static LockState ComputeLockPairs(
             } else {
                 const LockState &Existing = StateAtEntry[SuccBlock];
                 NewState.May = OutState.May;
-                NewState.May.insert(Existing.May.begin(), Existing.May.end());
-
-                std::set_intersection(
-                    OutState.Must.begin(), OutState.Must.end(),
-                    Existing.Must.begin(), Existing.Must.end(),
-                    std::inserter(NewState.Must, NewState.Must.begin()));
+                MergeMayInto(NewState.May, Existing.May);
+                NewState.Must = IntersectMust(OutState.Must, Existing.Must);
             }
 
             if (StateAtEntry.find(SuccBlock) == StateAtEntry.end() ||
@@ -263,12 +328,12 @@ static LockState AnalyzeFunctionBody(
     if (!Cfg) return InitialState;
 
     bool HadPrevious = CallStack.count(FD) > 0;
-    LockState PreviousValue;
+    CallContext PreviousValue;
     if (HadPrevious) {
         PreviousValue = CallStack[FD];
     }
 
-    CallStack[FD] = InitialState;
+    CallStack[FD] = CallContext{InitialState, ParamMap};
     LockState OutState = ComputeLockPairs(
         *Cfg, InitialState, Result, Context, CallStack, ParamMap, ThreadId);
 
@@ -280,14 +345,12 @@ static LockState AnalyzeFunctionBody(
 
     return OutState;
 }
-
 std::vector<LockPair> FindLockOrderPairs(FunctionDecl *FD, ASTContext &Context) {
     std::vector<LockPair> Result;
     CallStackMap CallStack;
     LockState InitialState;
     std::map<std::string, std::string> EmptyParamMap;
 
-    // Root poziv (main ili direktno pozvana root funkcija) dobija SVOJE ime kao ThreadId
     std::string ThreadId = FD->getNameAsString();
 
     AnalyzeFunctionBody(FD, Context, InitialState, Result, CallStack, EmptyParamMap, ThreadId);

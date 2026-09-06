@@ -94,6 +94,8 @@ int main(int argc, char** argv) {
         {"tests/deadlock/loop_deadlock.c", true, {{"m1","m2"}, {"m2","m1"}}},
         {"tests/deadlock/three_way_cycle_deadlock.c", true, {{"m1","m2"}, {"m2","m3"}, {"m3","m1"}}},
         {"tests/safe/sequential_calls_safe.c", false, {}},
+        {"tests/deadlock/rwlock_write_deadlock.c", true, {{"rw1","rw2"}, {"rw2","rw1"}}},
+        {"tests/safe/rwlock_readers_safe.c", false, {}},
     };
 
     std::string Filter;

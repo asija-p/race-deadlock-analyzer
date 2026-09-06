@@ -92,6 +92,8 @@ int main(int argc, char** argv) {
         {"tests/deadlock/disconnected_clusters_deadlock.c", true, {{"a1","a2"}, {"a2","a1"}, {"b1","b2"}, {"b2","b1"}}},
         {"tests/deadlock/conditional_unlock_deadlock.c", true, {{"m1","m2"}, {"m2","m1"}}},
         {"tests/deadlock/loop_deadlock.c", true, {{"m1","m2"}, {"m2","m1"}}},
+        {"tests/deadlock/three_way_cycle_deadlock.c", true, {{"m1","m2"}, {"m2","m3"}, {"m3","m1"}}},
+        {"tests/safe/sequential_calls_safe.c", false, {}},
     };
 
     std::string Filter;

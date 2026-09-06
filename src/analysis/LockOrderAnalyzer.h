@@ -17,8 +17,8 @@ struct LockPair {
     std::string To;
     std::set<std::string> ContextLocks;
     std::set<std::string> MustContextLocks;
+    std::string ThreadId;   // NOVO - koja "root" nit je napravila ovaj par
 
-    // Potrebno da bi LockPair mogao da ide u std::set (za dedup)
     bool operator<(const LockPair &Other) const {
         if (From != Other.From) return From < Other.From;
         if (To != Other.To) return To < Other.To;

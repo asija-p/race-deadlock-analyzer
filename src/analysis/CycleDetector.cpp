@@ -22,7 +22,6 @@ static void DFS(
             const std::string &Neighbor = Edge.To;
 
             if (InProgress.count(Neighbor)) {
-                // CIKLUS - sakupi pun put kao LockPair zapise
                 std::vector<LockPair> Cycle;
                 bool Started = false;
                 for (const LockPair &P : CurrentPath) {
@@ -42,8 +41,27 @@ static void DFS(
     InProgress.erase(Node);
 }
 
-// Proverava da li SVI parovi ivica u ciklusu dele bar jedan zajednicki lock.
-// Ako da - ciklus je lazan alarm (zasticen common lock-om).
+// Proverava da li SVE ivice ciklusa pripadaju ISTOJ niti (root funkciji).
+// Ako da, ciklus je LAZAN ALARM - jedna nit ne moze biti u konfliktu
+// sa samom sobom kroz sekvencijalne, ne-konkurentne pozive.
+static bool AllSameThread(const std::vector<LockPair> &Cycle) {
+    if (Cycle.empty()) return false;
+    const std::string &FirstThread = Cycle[0].ThreadId;
+    for (const auto &Edge : Cycle) {
+        if (Edge.ThreadId != FirstThread) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Kroeningov all_concurrent kriterijum (Sec 6.2): za SVAKI PAR ivica u
+// ciklusu, proveri da li dele bar jedan zajednicki Must-lock. Ako i JEDAN
+// par nema zajednicki lock, ciklus ostaje (nije u potpunosti zasticen).
+// NAPOMENA: ovo je parovi-po-parovima provera, ne globalni presek - to je
+// tacno ono sto Kroeningova formula (∀ parova ivica) definise, i izbegava
+// mesanje Must konteksta iz nepovezanih putanja izvrsavanja (npr. razlicitih
+// grana rekurzije), koje bi globalni presek mogao pogresno da spoji.
 static bool HasCommonLock(const std::vector<LockPair> &Cycle) {
     for (size_t i = 0; i < Cycle.size(); i++) {
         for (size_t j = i + 1; j < Cycle.size(); j++) {
@@ -62,14 +80,19 @@ static bool HasCommonLock(const std::vector<LockPair> &Cycle) {
 }
 
 std::vector<std::vector<LockPair>> FindCycles(const std::vector<LockPair> &Pairs) {
-    std::map<std::string, std::set<LockPair>> GraphSet;
+    // Dedup SAMO na osnovu potpunog poklapanja (From, To, ContextLocks I
+    // MustContextLocks) - ne spajamo (presecamo) Must vrednosti razlicitih
+    // zapisa, jer bi to mesalo kontekste iz nepovezanih putanja izvrsavanja
+    // (npr. razlicite grane rekurzije koje slucajno daju isti May par).
+    std::set<LockPair> DedupSet;
     for (const LockPair &P : Pairs) {
-        GraphSet[P.From].insert(P);
+        DedupSet.insert(P);
     }
+    std::vector<LockPair> Deduped(DedupSet.begin(), DedupSet.end());
 
     std::map<std::string, std::vector<LockPair>> Graph;
-    for (const auto &Entry : GraphSet) {
-        Graph[Entry.first] = std::vector<LockPair>(Entry.second.begin(), Entry.second.end());
+    for (const LockPair &P : Deduped) {
+        Graph[P.From].push_back(P);
     }
 
     std::set<std::string> Visited;
@@ -84,9 +107,12 @@ std::vector<std::vector<LockPair>> FindCycles(const std::vector<LockPair> &Pairs
         }
     }
 
-    // Filtriraj - izbaci cikluse koji su zasticeni zajednickim lockom
     std::vector<std::vector<LockPair>> RealCycles;
     for (const auto &Cycle : AllCycles) {
+        if (AllSameThread(Cycle)) {
+            continue;  // lazan alarm - ista nit, ne moze biti pravi deadlock
+        }
+
         if (!HasCommonLock(Cycle)) {
             RealCycles.push_back(Cycle);
         }

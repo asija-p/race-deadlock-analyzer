@@ -5,6 +5,7 @@
 #include <map>
 #include <algorithm>
 #include <iterator>
+#include <clang/Basic/SourceManager.h>
 
 using namespace clang;
 
@@ -53,9 +54,6 @@ static std::string ResolveName(const std::string &Name,
     return Name;
 }
 
-// LockState nosi OBA stanja zajedno kroz analizu:
-// May  = sta je MOGLO biti zakljucano (union na spajanju grana)
-// Must = sta je SIGURNO bilo zakljucano (presek na spajanju grana)
 struct LockState {
     std::set<std::string> May;
     std::set<std::string> Must;
@@ -68,8 +66,6 @@ struct LockState {
     }
 };
 
-// CallStack pamti KOJIM LockState-om smo POSLEDNJI PUT usli u svaku funkciju
-// trenutno "na stack-u" - omogucava fixpoint pristup rekurziji.
 using CallStackMap = std::map<const FunctionDecl*, LockState>;
 
 static LockState AnalyzeFunctionBody(
@@ -78,7 +74,8 @@ static LockState AnalyzeFunctionBody(
     LockState InitialState,
     std::vector<LockPair> &Result,
     CallStackMap &CallStack,
-    const std::map<std::string, std::string> &ParamMap);
+    const std::map<std::string, std::string> &ParamMap,
+    const std::string &ThreadId);
 
 static LockState ProcessBlock(
     const CFGBlock *Block,
@@ -86,7 +83,8 @@ static LockState ProcessBlock(
     std::vector<LockPair> &Result,
     ASTContext &Context,
     CallStackMap &CallStack,
-    const std::map<std::string, std::string> &ParamMap) {
+    const std::map<std::string, std::string> &ParamMap,
+    const std::string &ThreadId) {
 
     for (const CFGElement &Elem : *Block) {
         auto CS = Elem.getAs<CFGStmt>();
@@ -108,15 +106,13 @@ static LockState ProcessBlock(
             std::string MutexName = ResolveName(RawName, ParamMap);
 
             if (FuncName == "pthread_mutex_lock" || FuncName == "pthread_mutex_trylock") {
-                // Pravimo parove iz MAY skupa (sound - ne sme propustiti nijednu
-                // mogucu ivicu), ali svaki par nosi i MUST kontekst za kasniji
-                // common-locks filter.
                 for (const std::string &Prev : State.May) {
                     LockPair P;
                     P.From = Prev;
                     P.To = MutexName;
                     P.ContextLocks = State.May;
                     P.MustContextLocks = State.Must;
+                    P.ThreadId = ThreadId;
                     Result.push_back(P);
                 }
                 State.May.insert(MutexName);
@@ -144,8 +140,14 @@ static LockState ProcessBlock(
                                                 (It->second != EmptyState);
                             if (ShouldEnter) {
                                 std::map<std::string, std::string> EmptyParamMap;
+
+                                // NOVO: ThreadId = MESTO poziva (linija), ne ime funkcije
+                                unsigned Line = Context.getSourceManager()
+                                                    .getSpellingLineNumber(Call->getBeginLoc());
+                                std::string NewThreadId = "create_line_" + std::to_string(Line);
+
                                 AnalyzeFunctionBody(ThreadDef, Context, EmptyState, Result,
-                                                     CallStack, EmptyParamMap);
+                                                    CallStack, EmptyParamMap, NewThreadId);
                             }
                         }
                     }
@@ -174,8 +176,9 @@ static LockState ProcessBlock(
                                 (It->second != State);
 
             if (ShouldEnter) {
+                // Obican poziv - NASLEDJUJE isti ThreadId (deo je iste niti)
                 State = AnalyzeFunctionBody(
-                    Definition, Context, State, Result, CallStack, NewParamMap);
+                    Definition, Context, State, Result, CallStack, NewParamMap, ThreadId);
             }
         }
     }
@@ -189,7 +192,8 @@ static LockState ComputeLockPairs(
     std::vector<LockPair> &Result,
     ASTContext &Context,
     CallStackMap &CallStack,
-    const std::map<std::string, std::string> &ParamMap) {
+    const std::map<std::string, std::string> &ParamMap,
+    const std::string &ThreadId) {
 
     std::map<const CFGBlock*, LockState> StateAtEntry;
     std::map<const CFGBlock*, bool> Visited;
@@ -206,7 +210,7 @@ static LockState ComputeLockPairs(
 
         LockState InState = StateAtEntry[Block];
         LockState OutState = ProcessBlock(
-            Block, InState, Result, Context, CallStack, ParamMap);
+            Block, InState, Result, Context, CallStack, ParamMap, ThreadId);
 
         for (const CFGBlock::AdjacentBlock &Succ : Block->succs()) {
             if (!Succ.isReachable()) continue;
@@ -214,11 +218,9 @@ static LockState ComputeLockPairs(
 
             LockState NewState;
             if (!Visited[SuccBlock]) {
-                // Prvi put stizemo ovde - preuzmi stanje kakvo jeste
                 NewState = OutState;
                 Visited[SuccBlock] = true;
             } else {
-                // Vec smo bili ovde - May: UNIJA, Must: PRESEK sa postojecim
                 const LockState &Existing = StateAtEntry[SuccBlock];
                 NewState.May = OutState.May;
                 NewState.May.insert(Existing.May.begin(), Existing.May.end());
@@ -251,7 +253,8 @@ static LockState AnalyzeFunctionBody(
     LockState InitialState,
     std::vector<LockPair> &Result,
     CallStackMap &CallStack,
-    const std::map<std::string, std::string> &ParamMap) {
+    const std::map<std::string, std::string> &ParamMap,
+    const std::string &ThreadId) {
 
     if (!FD->hasBody()) return InitialState;
 
@@ -267,7 +270,7 @@ static LockState AnalyzeFunctionBody(
 
     CallStack[FD] = InitialState;
     LockState OutState = ComputeLockPairs(
-        *Cfg, InitialState, Result, Context, CallStack, ParamMap);
+        *Cfg, InitialState, Result, Context, CallStack, ParamMap, ThreadId);
 
     if (HadPrevious) {
         CallStack[FD] = PreviousValue;
@@ -284,7 +287,10 @@ std::vector<LockPair> FindLockOrderPairs(FunctionDecl *FD, ASTContext &Context) 
     LockState InitialState;
     std::map<std::string, std::string> EmptyParamMap;
 
-    AnalyzeFunctionBody(FD, Context, InitialState, Result, CallStack, EmptyParamMap);
+    // Root poziv (main ili direktno pozvana root funkcija) dobija SVOJE ime kao ThreadId
+    std::string ThreadId = FD->getNameAsString();
+
+    AnalyzeFunctionBody(FD, Context, InitialState, Result, CallStack, EmptyParamMap, ThreadId);
 
     return Result;
 }

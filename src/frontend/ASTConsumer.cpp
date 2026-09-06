@@ -41,7 +41,14 @@ void DumpASTConsumer::HandleTranslationUnit(ASTContext &Context) {
     if (!QuietMode) {
         std::cout << "\n=== SVI parovi zakljucavanja (iz svih funkcija) ===\n";
         for (const LockPair &P : AllPairs) {
-            std::cout << P.From << " -> " << P.To << "\n";
+            std::cout << P.From << " -> " << P.To << "  | Must={";
+            bool first = true;
+            for (const auto &L : P.MustContextLocks) {
+                if (!first) std::cout << ",";
+                std::cout << L;
+                first = false;
+            }
+            std::cout << "}\n";
         }
     }
 

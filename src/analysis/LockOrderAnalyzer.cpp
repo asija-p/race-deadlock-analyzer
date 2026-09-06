@@ -94,7 +94,14 @@ static void MergeMayInto(std::map<std::string, LockKind> &Target,
 }
 
 // Presek Must-lockset-a dve grane. Brava ostaje u preseku samo ako je SIGURNO
-// drzana na obe grane; ako je mod razlicit izmedju grana, konzervativno Write.
+// drzana na obe grane. Ako je mod RAZLICIT izmedju grana, ne mozemo tvrditi
+// da je SIGURNO Write (to bi bila neosnovana tvrdnja o zastiti koja moze
+// sakriti pravi deadlock u HasCommonLock) - zato ovde konzervativno biramo
+// Read, tj. "nije garantovano ekskluzivno". Ovo je NAMERNO suprotan smer od
+// MergeMayInto (koji za May-lockset bira Write kod nesigurnosti) - odgovaraju
+// na suprotna pitanja: May pita "da li se MOZE sudariti" (Write = gori slucaj),
+// a Must pita "da li smo SIGURNO zasticeni" (Read = gori slucaj, tj. manje
+// pouzdana zastita).
 static std::map<std::string, LockKind> IntersectMust(
     const std::map<std::string, LockKind> &A,
     const std::map<std::string, LockKind> &B) {
@@ -102,7 +109,7 @@ static std::map<std::string, LockKind> IntersectMust(
     for (const auto &Entry : A) {
         auto It = B.find(Entry.first);
         if (It != B.end()) {
-            Result[Entry.first] = (Entry.second == It->second) ? Entry.second : LockKind::Write;
+            Result[Entry.first] = (Entry.second == It->second) ? Entry.second : LockKind::Read;
         }
     }
     return Result;
@@ -180,6 +187,7 @@ static LockState ProcessBlock(
                     P.ToKind = NewKind;
                     P.ContextLocks = KeysOf(State.May);
                     P.MustContextLocks = KeysOf(State.Must);
+                    P.MustContextKinds = State.Must;
                     P.ThreadId = ThreadId;
                     Result.push_back(P);
                 }

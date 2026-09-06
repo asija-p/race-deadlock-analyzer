@@ -6,6 +6,7 @@
 #include <vector>
 #include <string>
 #include <set>
+#include <map>
 
 using namespace clang;
 
@@ -27,6 +28,7 @@ struct LockPair {
     LockKind ToKind = LockKind::Write;     // NOVO - mod u kom se "To" akvirira
     std::set<std::string> ContextLocks;
     std::set<std::string> MustContextLocks;
+    std::map<std::string, LockKind> MustContextKinds;  // NOVO - mod svake brave u Must-setu
     std::string ThreadId;   // NOVO - koja "root" nit je napravila ovaj par
 
     bool operator<(const LockPair &Other) const {
@@ -36,6 +38,7 @@ struct LockPair {
         if (ToKind != Other.ToKind) return ToKind < Other.ToKind;
         if (ContextLocks != Other.ContextLocks) return ContextLocks < Other.ContextLocks;
         if (MustContextLocks != Other.MustContextLocks) return MustContextLocks < Other.MustContextLocks;
+        if (MustContextKinds != Other.MustContextKinds) return MustContextKinds < Other.MustContextKinds;
         return ThreadId < Other.ThreadId;
     }
 };

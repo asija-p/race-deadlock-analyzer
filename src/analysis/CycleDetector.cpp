@@ -56,28 +56,42 @@ static bool AllSameThread(const std::vector<LockPair> &Cycle) {
 }
 
 // Kroeningov all_concurrent kriterijum (Sec 6.2): za SVAKI PAR ivica u
-// ciklusu, proveri da li dele bar jedan zajednicki Must-lock. Ako i JEDAN
-// par nema zajednicki lock, ciklus ostaje (nije u potpunosti zasticen).
+// ciklusu, proveri da li dele bar jednu zajednicku Must-bravu koja STVARNO
+// stiti (vidi ProtectingLockExists ispod). Ako i JEDAN par nema takvu bravu,
+// ciklus ostaje (nije u potpunosti zasticen).
 // NAPOMENA: ovo je parovi-po-parovima provera, ne globalni presek - to je
 // tacno ono sto Kroeningova formula (∀ parova ivica) definise, i izbegava
 // mesanje Must konteksta iz nepovezanih putanja izvrsavanja (npr. razlicitih
 // grana rekurzije), koje bi globalni presek mogao pogresno da spoji.
+//
+// ISPRAVKA (bilo poznato ogranicenje): zajednicka brava stiti samo ako je
+// BAR JEDNA strana drzi u Write modu. Ako obe strane drze istu rwlock bravu
+// samo u Read modu, ta brava NE iskljucuje jedno izvrsavanje od drugog (dva
+// citaoca mogu istovremeno drzati bravu), pa ne sme da "spase" ciklus od
+// prijave - u suprotnom bismo propustili pravi deadlock.
+static bool ProtectingLockExists(const LockPair &A, const LockPair &B) {
+    for (const auto &EntryA : A.MustContextKinds) {
+        auto ItB = B.MustContextKinds.find(EntryA.first);
+        if (ItB == B.MustContextKinds.end()) continue;
+
+        if (EntryA.second == LockKind::Write || ItB->second == LockKind::Write) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static bool HasCommonLock(const std::vector<LockPair> &Cycle) {
     for (size_t i = 0; i < Cycle.size(); i++) {
         for (size_t j = i + 1; j < Cycle.size(); j++) {
-            std::set<std::string> Intersection;
-            std::set_intersection(
-                Cycle[i].MustContextLocks.begin(), Cycle[i].MustContextLocks.end(),
-                Cycle[j].MustContextLocks.begin(), Cycle[j].MustContextLocks.end(),
-                std::inserter(Intersection, Intersection.begin()));
-
-            if (Intersection.empty()) {
+            if (!ProtectingLockExists(Cycle[i], Cycle[j])) {
                 return false;
             }
         }
     }
     return true;
 }
+
 
 // Za svaki deljeni cvor izmedju dve UZASTOPNE ivice ciklusa, proverava da li
 // se te dve strane uopste MOGU sudariti. Na cvoru gde se Cycle[i] zavrsava

@@ -41,9 +41,6 @@ static void DFS(
     InProgress.erase(Node);
 }
 
-// Proverava da li SVE ivice ciklusa pripadaju ISTOJ niti (root funkciji).
-// Ako da, ciklus je LAZAN ALARM - jedna nit ne moze biti u konfliktu
-// sa samom sobom kroz sekvencijalne, ne-konkurentne pozive.
 static bool AllSameThread(const std::vector<LockPair> &Cycle) {
     if (Cycle.empty()) return false;
     const std::string &FirstThread = Cycle[0].ThreadId;
@@ -52,8 +49,6 @@ static bool AllSameThread(const std::vector<LockPair> &Cycle) {
             return false;
         }
     }
-    // Sve ivice dele istu nit - ali ako je ta nit CreatedInLoop, ne
-    // smemo tvrditi da je "sigurno ista instanca".
     if (Cycle[0].CreatedInLoop) {
         return false;
     }
@@ -89,13 +84,14 @@ static bool ProtectingLockExists(const LockPair &A, const LockPair &B) {
 static bool HasCommonLock(const std::vector<LockPair> &Cycle) {
     for (size_t i = 0; i < Cycle.size(); i++) {
         for (size_t j = i + 1; j < Cycle.size(); j++) {
-            if (!ProtectingLockExists(Cycle[i], Cycle[j])) {
-                return false;
+            if (ProtectingLockExists(Cycle[i], Cycle[j])) {
+                return true;
             }
         }
     }
-    return true;
+    return false;
 }
+
 
 // Za svaki deljeni cvor izmedju dve UZASTOPNE ivice ciklusa, proverava da li
 // se te dve strane uopste MOGU sudariti. Na cvoru gde se Cycle[i] zavrsava

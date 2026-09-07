@@ -1,8 +1,8 @@
 #include "ASTConsumer.h"
 #include "CallVisitor.h"
 #include "CFGPrinter.h"
-#include "../analysis/LockOrderAnalyzer.h"
-#include "../analysis/CycleDetector.h"
+#include "../analysis/deadlock/LockOrderAnalyzer.h"
+#include "../analysis/deadlock/CycleDetector.h"
 
 bool QuietMode = false;
 

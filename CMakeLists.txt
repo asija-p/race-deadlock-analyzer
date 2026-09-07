@@ -15,8 +15,12 @@ add_executable(analyzer
     src/frontend/CallVisitor.cpp
     src/frontend/CFGPrinter.cpp
     src/frontend/ASTConsumer.cpp
-    src/analysis/LockOrderAnalyzer.cpp
-    src/analysis/CycleDetector.cpp
+    src/analysis/deadlock/LockOrderAnalyzer.cpp
+    src/analysis/deadlock/CycleDetector.cpp
+    src/analysis/common/ASTUtils.cpp
+    src/analysis/common/CFGUtils.cpp
+    src/analysis/common/LockState.cpp
+    src/analysis/common/InterproceduralWalker.cpp
 )
 
 target_include_directories(analyzer PRIVATE

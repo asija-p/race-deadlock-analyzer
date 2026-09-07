@@ -98,6 +98,8 @@ int main(int argc, char** argv) {
         {"tests/safe/rwlock_readers_safe.c", false, {}},
         {"tests/deadlock/rwlock_shared_must_not_protect_deadlock.c", true, {{"m1","m2"}, {"m2","m1"}}},
         {"tests/deadlock/deref_dot_normalization_deadlock.c", true, {{"p.lock1","p.lock2"}, {"p.lock2","p.lock1"}}},   
+        {"tests/safe/join_removes_false_deadlock_safe.c", false, {}},
+        {"tests/deadlock/create_without_join_deadlock.c", true, {{"m1","m2"}, {"m2","m1"}}},
     };
     std::string Filter;
     if (argc >= 2) {

@@ -33,11 +33,6 @@ static std::string ExtractVarName(const Expr *Arg) {
     if (auto *Member = dyn_cast<MemberExpr>(Arg)) {
         std::string BaseName = "?";
         const Expr *Base = Member->getBase()->IgnoreParenImpCasts();
-        // Normalizacija: (*p).field ima Base = UnaryOperator(Deref, p), dok
-        // p->field ima Base = p direktno (isti semanticki objekat - polje
-        // strukture na koju p pokazuje). Bez ovoga, (*p).field vraca razbijen
-        // naziv "?.field" jer IgnoreParenImpCasts ne skida UnaryOperator, pa
-        // DeclRefExpr ispod nikad nije pronadjen.
         if (auto *DerefOp = dyn_cast<UnaryOperator>(Base)) {
             if (DerefOp->getOpcode() == UO_Deref) {
                 Base = DerefOp->getSubExpr()->IgnoreParenImpCasts();
@@ -68,17 +63,18 @@ static std::string ResolveName(const std::string &Name,
 struct LockState {
     std::map<std::string, LockKind> May;
     std::map<std::string, LockKind> Must;
+    std::map<std::string, std::string> ThreadHandles;  // NOVO - "tid" ime -> ThreadId
+    std::set<std::string> JoinedThreads;                // NOVO - koje niti su SIGURNO gotove
 
     bool operator==(const LockState &Other) const {
-        return May == Other.May && Must == Other.Must;
+        return May == Other.May && Must == Other.Must &&
+               ThreadHandles == Other.ThreadHandles && JoinedThreads == Other.JoinedThreads;
     }
     bool operator!=(const LockState &Other) const {
         return !(*this == Other);
     }
 };
 
-// Vraca skup imena brava iz May/Must mape (za popunjavanje LockPair::ContextLocks,
-// koji ostaje set<string> - ne zanima nas mod za taj deo, samo koja su imena bila u igri).
 static std::set<std::string> KeysOf(const std::map<std::string, LockKind> &M) {
     std::set<std::string> Keys;
     for (const auto &Entry : M) {
@@ -87,10 +83,6 @@ static std::set<std::string> KeysOf(const std::map<std::string, LockKind> &M) {
     return Keys;
 }
 
-// Spaja Source u Target (May-lockset, unija na granama CFG-a).
-// Ako je ista brava prisutna na obe grane ali sa RAZLICITIM modom (npr. Read na
-// jednoj grani, Write na drugoj), konzervativno je tretiramo kao Write - bolje
-// lazni pozitiv nego da progutamo mogucu ekskluzivnu akviziciju.
 static void MergeMayInto(std::map<std::string, LockKind> &Target,
                           const std::map<std::string, LockKind> &Source) {
     for (const auto &Entry : Source) {
@@ -103,15 +95,6 @@ static void MergeMayInto(std::map<std::string, LockKind> &Target,
     }
 }
 
-// Presek Must-lockset-a dve grane. Brava ostaje u preseku samo ako je SIGURNO
-// drzana na obe grane. Ako je mod RAZLICIT izmedju grana, ne mozemo tvrditi
-// da je SIGURNO Write (to bi bila neosnovana tvrdnja o zastiti koja moze
-// sakriti pravi deadlock u HasCommonLock) - zato ovde konzervativno biramo
-// Read, tj. "nije garantovano ekskluzivno". Ovo je NAMERNO suprotan smer od
-// MergeMayInto (koji za May-lockset bira Write kod nesigurnosti) - odgovaraju
-// na suprotna pitanja: May pita "da li se MOZE sudariti" (Write = gori slucaj),
-// a Must pita "da li smo SIGURNO zasticeni" (Read = gori slucaj, tj. manje
-// pouzdana zastita).
 static std::map<std::string, LockKind> IntersectMust(
     const std::map<std::string, LockKind> &A,
     const std::map<std::string, LockKind> &B) {
@@ -124,7 +107,6 @@ static std::map<std::string, LockKind> IntersectMust(
     }
     return Result;
 }
-
 
 struct CallContext {
     LockState State;
@@ -170,11 +152,9 @@ static LockState ProcessBlock(
 
         std::string FuncName = Callee->getNameAsString();
 
-        // Write-mod brave: mutex i spinlock su UVEK ekskluzivni; rwlock wrlock isto.
         bool IsWriteLock = (FuncName == "pthread_mutex_lock" || FuncName == "pthread_mutex_trylock" ||
                              FuncName == "pthread_spin_lock" || FuncName == "pthread_spin_trylock" ||
                              FuncName == "pthread_rwlock_wrlock" || FuncName == "pthread_rwlock_trywrlock");
-        // Read-mod: samo rwlock rdlock - deljena brava, ne sudara se sa drugim Read-om.
         bool IsReadLock = (FuncName == "pthread_rwlock_rdlock" || FuncName == "pthread_rwlock_tryrdlock");
         bool IsUnlock = (FuncName == "pthread_mutex_unlock" ||
                           FuncName == "pthread_spin_unlock" ||
@@ -198,6 +178,7 @@ static LockState ProcessBlock(
                     P.ContextLocks = KeysOf(State.May);
                     P.MustContextLocks = KeysOf(State.Must);
                     P.MustContextKinds = State.Must;
+                    P.JoinedThreads = State.JoinedThreads;   // NOVO
                     P.ThreadId = ThreadId;
                     Result.push_back(P);
                 }
@@ -212,6 +193,19 @@ static LockState ProcessBlock(
 
         if (FuncName == "pthread_create") {
             if (Call->getNumArgs() >= 3) {
+                // NOVO: racunamo NewThreadId ODMAH, ne samo unutar ShouldEnter,
+                // jer nam treba za ThreadHandles bez obzira da li se telo
+                // niti ponovo analizira.
+                unsigned Line = Context.getSourceManager()
+                                    .getSpellingLineNumber(Call->getBeginLoc());
+                std::string NewThreadId = "create_line_" + std::to_string(Line);
+
+                std::string RawTidName = ExtractVarName(Call->getArg(0));
+                std::string TidName = ResolveName(RawTidName, ParamMap);
+                if (TidName != "?") {
+                    State.ThreadHandles[TidName] = NewThreadId;
+                }
+
                 const Expr *ThreadArg = Call->getArg(2)->IgnoreParenImpCasts();
                 if (auto *Cast = dyn_cast<CastExpr>(ThreadArg)) {
                     ThreadArg = Cast->getSubExpr()->IgnoreParenImpCasts();
@@ -221,22 +215,35 @@ static LockState ProcessBlock(
                         const FunctionDecl *ThreadDef = ThreadFD->getDefinition();
                         if (ThreadDef && ThreadDef->hasBody()) {
                             LockState EmptyState;
+                            // NOVO: brave ostaju prazne, ALI JoinedThreads i
+                            // ThreadHandles se NASLEDJUJU od roditelja u ovom
+                            // trenutku - resava slucaj create t1, join t1, create t2.
+                            EmptyState.ThreadHandles = State.ThreadHandles;
+                            EmptyState.JoinedThreads = State.JoinedThreads;
+
                             std::map<std::string, std::string> EmptyParamMap;
                             CallContext EmptyContext{EmptyState, EmptyParamMap};
                             auto It = CallStack.find(ThreadDef);
                             bool ShouldEnter = (It == CallStack.end()) ||
                                                 (It->second != EmptyContext);
                             if (ShouldEnter) {
-                                // NOVO: ThreadId = MESTO poziva (linija), ne ime funkcije
-                                unsigned Line = Context.getSourceManager()
-                                                    .getSpellingLineNumber(Call->getBeginLoc());
-                                std::string NewThreadId = "create_line_" + std::to_string(Line);
-
                                 AnalyzeFunctionBody(ThreadDef, Context, EmptyState, Result,
                                                     CallStack, EmptyParamMap, NewThreadId);
                             }
                         }
                     }
+                }
+            }
+            continue;
+        }
+
+        if (FuncName == "pthread_join") {
+            if (Call->getNumArgs() >= 1) {
+                std::string RawTidName = ExtractVarName(Call->getArg(0));
+                std::string TidName = ResolveName(RawTidName, ParamMap);
+                auto HandleIt = State.ThreadHandles.find(TidName);
+                if (HandleIt != State.ThreadHandles.end()) {
+                    State.JoinedThreads.insert(HandleIt->second);
                 }
             }
             continue;
@@ -263,7 +270,6 @@ static LockState ProcessBlock(
                                 (It->second != NewContext);
 
             if (ShouldEnter) {
-                // Obican poziv - NASLEDJUJE isti ThreadId (deo je iste niti)
                 State = AnalyzeFunctionBody(
                     Definition, Context, State, Result, CallStack, NewParamMap, ThreadId);
             }
@@ -312,6 +318,10 @@ static LockState ComputeLockPairs(
                 NewState.May = OutState.May;
                 MergeMayInto(NewState.May, Existing.May);
                 NewState.Must = IntersectMust(OutState.Must, Existing.Must);
+                // NAPOMENA: ThreadHandles/JoinedThreads merge na granama grananja
+                // (if/loop) NIJE ovde odradjen - poznato ogranicenje za sledeci
+                // mikro-korak. Za pravolinijski kod (bez grananja izmedju
+                // create/join) ova grana se i ne izvrsava.
             }
 
             if (StateAtEntry.find(SuccBlock) == StateAtEntry.end() ||
@@ -363,6 +373,7 @@ static LockState AnalyzeFunctionBody(
 
     return OutState;
 }
+
 std::vector<LockPair> FindLockOrderPairs(FunctionDecl *FD, ASTContext &Context) {
     std::vector<LockPair> Result;
     CallStackMap CallStack;

@@ -116,6 +116,23 @@ static bool AllNodesCanConflict(const std::vector<LockPair> &Cycle) {
     return true;
 }
 
+static bool HasJoinPrecedence(const LockPair &A, const LockPair &B) {
+    if (A.JoinedThreads.count(B.ThreadId)) return true;
+    if (B.JoinedThreads.count(A.ThreadId)) return true;
+    return false;
+}
+
+static bool AnyPairHasJoinPrecedence(const std::vector<LockPair> &Cycle) {
+    for (size_t i = 0; i < Cycle.size(); i++) {
+        for (size_t j = i + 1; j < Cycle.size(); j++) {
+            if (HasJoinPrecedence(Cycle[i], Cycle[j])) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 std::vector<std::vector<LockPair>> FindCycles(const std::vector<LockPair> &Pairs) {
     // Dedup SAMO na osnovu potpunog poklapanja (From, To, ContextLocks I
     // MustContextLocks) - ne spajamo (presecamo) Must vrednosti razlicitih
@@ -150,7 +167,7 @@ std::vector<std::vector<LockPair>> FindCycles(const std::vector<LockPair> &Pairs
             continue;  // lazan alarm - ista nit, ne moze biti pravi deadlock
         }
 
-        if (!HasCommonLock(Cycle) && AllNodesCanConflict(Cycle)) {
+        if (!HasCommonLock(Cycle) && AllNodesCanConflict(Cycle) && !AnyPairHasJoinPrecedence(Cycle)) {
             RealCycles.push_back(Cycle);
         }
     }

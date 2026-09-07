@@ -24,12 +24,13 @@ enum class LockKind {
 struct LockPair {
     std::string From;
     std::string To;
-    LockKind FromKind = LockKind::Write;   // NOVO - mod u kom je "From" bila drzana
-    LockKind ToKind = LockKind::Write;     // NOVO - mod u kom se "To" akvirira
+    LockKind FromKind = LockKind::Write;
+    LockKind ToKind = LockKind::Write;
     std::set<std::string> ContextLocks;
     std::set<std::string> MustContextLocks;
-    std::map<std::string, LockKind> MustContextKinds;  // NOVO - mod svake brave u Must-setu
-    std::string ThreadId;   // NOVO - koja "root" nit je napravila ovaj par
+    std::map<std::string, LockKind> MustContextKinds;
+    std::set<std::string> JoinedThreads;   // NOVO - koje niti su SIGURNO vec join-ovane
+    std::string ThreadId;
 
     bool operator<(const LockPair &Other) const {
         if (From != Other.From) return From < Other.From;
@@ -39,6 +40,7 @@ struct LockPair {
         if (ContextLocks != Other.ContextLocks) return ContextLocks < Other.ContextLocks;
         if (MustContextLocks != Other.MustContextLocks) return MustContextLocks < Other.MustContextLocks;
         if (MustContextKinds != Other.MustContextKinds) return MustContextKinds < Other.MustContextKinds;
+        if (JoinedThreads != Other.JoinedThreads) return JoinedThreads < Other.JoinedThreads;
         return ThreadId < Other.ThreadId;
     }
 };

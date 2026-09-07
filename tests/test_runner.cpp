@@ -168,6 +168,7 @@ int main(int argc, char** argv) {
         {"tests/race/may_race.c", false, {}, true, {"x"}, "MAY"},
         {"tests/race/loop_race.c", false, {}, true, {"x"}, "MAY"},
         {"tests/safe/same_thread_safe.c", false, {}},
+        {"tests/safe/partial_protection_safe.c", false, {}},
     };
     std::string Filter;
     if (argc >= 2) {

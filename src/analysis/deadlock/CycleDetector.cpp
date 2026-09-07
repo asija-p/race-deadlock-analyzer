@@ -97,7 +97,6 @@ static bool HasCommonLock(const std::vector<LockPair> &Cycle) {
     return true;
 }
 
-
 // Za svaki deljeni cvor izmedju dve UZASTOPNE ivice ciklusa, proverava da li
 // se te dve strane uopste MOGU sudariti. Na cvoru gde se Cycle[i] zavrsava
 // (Cycle[i].To) i Cycle[i+1] pocinje (Cycle[i+1].From), Cycle[i] pokusava da

@@ -117,8 +117,12 @@ static bool AllNodesCanConflict(const std::vector<LockPair> &Cycle) {
 }
 
 static bool HasJoinPrecedence(const LockPair &A, const LockPair &B) {
-    if (A.JoinedThreads.count(B.ThreadId)) return true;
-    if (B.JoinedThreads.count(A.ThreadId)) return true;
+    // Ako je ThreadId strane B kreiran u petlji, isti ThreadId moze
+    // predstavljati VISE razlicitih niti (po jedna po iteraciji) - prisustvo
+    // u JoinedThreads tad ne garantuje da je BAS OVA konkretna instanca
+    // sacekana, pa se ne sme koristiti za iskljucivanje.
+    if (A.JoinedThreads.count(B.ThreadId) && !B.CreatedInLoop) return true;
+    if (B.JoinedThreads.count(A.ThreadId) && !A.CreatedInLoop) return true;
     return false;
 }
 

@@ -12,6 +12,7 @@ void DumpASTConsumer::HandleTranslationUnit(ASTContext &Context) {
 
     CallFinderVisitor Visitor(SM);
     std::vector<LockPair> AllPairs;
+    std::set<std::string> CreatedInLoop;
 
     for (Decl *D : TU->decls()) {
         if (!SM.isInMainFile(D->getLocation())) {
@@ -30,7 +31,7 @@ void DumpASTConsumer::HandleTranslationUnit(ASTContext &Context) {
             }
 
             if (FD->getNameAsString() == "main") {
-                std::vector<LockPair> Pairs = FindLockOrderPairs(FD, Context);
+                std::vector<LockPair> Pairs = FindLockOrderPairs(FD, Context, CreatedInLoop);
                 for (const LockPair &P : Pairs) {
                     AllPairs.push_back(P);
                 }
@@ -55,7 +56,16 @@ void DumpASTConsumer::HandleTranslationUnit(ASTContext &Context) {
             std::cout << J;
             firstJ = false;
         }
-        std::cout << "}\n";
+        std::cout << "}  | CreatedInLoop=" << (P.CreatedInLoop ? "true" : "false") << "\n";
+    }
+
+    std::cout << "\n=== CreatedInLoop (ThreadId-jevi kreirani unutar petlje) ===\n";
+    if (CreatedInLoop.empty()) {
+        std::cout << "(prazno)\n";
+    } else {
+        for (const auto &T : CreatedInLoop) {
+            std::cout << T << "\n";
+        }
     }
     }
 
@@ -77,7 +87,6 @@ void DumpASTConsumer::HandleTranslationUnit(ASTContext &Context) {
         return;
     }   
 
-    // Puni, "lep" ispis za rucno pregledanje
     if (!Cycles.empty()) {
         std::cout << "UPOZORENJE: Moguci deadlock!\n";
         std::set<std::string> SeenSignatures;

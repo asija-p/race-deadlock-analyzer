@@ -60,6 +60,33 @@ static std::string ResolveName(const std::string &Name,
     return Name;
 }
 
+// Proverava da li je Start deo ciklusa u CFG grafu (tj. da li postoji put
+// napred od njegovih naslednika koji se vraca nazad na Start). Cista
+// dostiznost na statickoj strukturi grafa - NE zavisi od worklist fixpoint
+// obrade, pa ne pravi lazne pozitive na obicnom if/else grananju.
+static bool IsBlockInLoop(const CFGBlock *Start) {
+    std::set<const CFGBlock*> Visited;
+    std::vector<const CFGBlock*> Worklist;
+    for (const CFGBlock::AdjacentBlock &Succ : Start->succs()) {
+        if (Succ.isReachable()) {
+            Worklist.push_back(Succ.getReachableBlock());
+        }
+    }
+    while (!Worklist.empty()) {
+        const CFGBlock *B = Worklist.back();
+        Worklist.pop_back();
+        if (B == Start) return true;
+        if (Visited.count(B)) continue;
+        Visited.insert(B);
+        for (const CFGBlock::AdjacentBlock &Succ : B->succs()) {
+            if (Succ.isReachable()) {
+                Worklist.push_back(Succ.getReachableBlock());
+            }
+        }
+    }
+    return false;
+}
+
 struct LockState {
     std::map<std::string, LockKind> May;
     std::map<std::string, LockKind> Must;
@@ -108,8 +135,6 @@ static std::map<std::string, LockKind> IntersectMust(
     return Result;
 }
 
-// Presek JoinedThreads dve grane (Must-stil, analogno IntersectMust). Nit je
-// "sigurno gotova" nakon spajanja grana samo ako je gotova na OBE grane.
 static std::set<std::string> IntersectJoinedThreads(
     const std::set<std::string> &A, const std::set<std::string> &B) {
     std::set<std::string> Result;
@@ -118,8 +143,6 @@ static std::set<std::string> IntersectJoinedThreads(
     return Result;
 }
 
-// Unija ThreadHandles (ime -> ThreadId) - cisto knjigovodstvo, nije kriticno
-// za soundness (dokaz non-concurrency se oslanja na JoinedThreads).
 static void MergeThreadHandlesInto(std::map<std::string, std::string> &Target,
                                     const std::map<std::string, std::string> &Source) {
     for (const auto &Entry : Source) {
@@ -148,7 +171,8 @@ static LockState AnalyzeFunctionBody(
     std::vector<LockPair> &Result,
     CallStackMap &CallStack,
     const std::map<std::string, std::string> &ParamMap,
-    const std::string &ThreadId);
+    const std::string &ThreadId,
+    std::set<std::string> &CreatedInLoop);
 
 static LockState ProcessBlock(
     const CFGBlock *Block,
@@ -157,7 +181,8 @@ static LockState ProcessBlock(
     ASTContext &Context,
     CallStackMap &CallStack,
     const std::map<std::string, std::string> &ParamMap,
-    const std::string &ThreadId) {
+    const std::string &ThreadId,
+    std::set<std::string> &CreatedInLoop) {
 
     for (const CFGElement &Elem : *Block) {
         auto CS = Elem.getAs<CFGStmt>();
@@ -198,6 +223,7 @@ static LockState ProcessBlock(
                     P.MustContextLocks = KeysOf(State.Must);
                     P.MustContextKinds = State.Must;
                     P.JoinedThreads = State.JoinedThreads;
+                    P.CreatedInLoop = CreatedInLoop.count(ThreadId) > 0;   // NOVO
                     P.ThreadId = ThreadId;
                     Result.push_back(P);
                 }
@@ -215,6 +241,13 @@ static LockState ProcessBlock(
                 unsigned Line = Context.getSourceManager()
                                     .getSpellingLineNumber(Call->getBeginLoc());
                 std::string NewThreadId = "create_line_" + std::to_string(Line);
+
+                // NOVO: ako se ovaj pthread_create nalazi u petlji, isti
+                // NewThreadId moze predstavljati VISE razlicitih stvarnih
+                // niti (po jedna po iteraciji).
+                if (IsBlockInLoop(Block)) {
+                    CreatedInLoop.insert(NewThreadId);
+                }
 
                 std::string RawTidName = ExtractVarName(Call->getArg(0));
                 std::string TidName = ResolveName(RawTidName, ParamMap);
@@ -241,7 +274,7 @@ static LockState ProcessBlock(
                                                 (It->second != EmptyContext);
                             if (ShouldEnter) {
                                 AnalyzeFunctionBody(ThreadDef, Context, EmptyState, Result,
-                                                    CallStack, EmptyParamMap, NewThreadId);
+                                                    CallStack, EmptyParamMap, NewThreadId, CreatedInLoop);
                             }
                         }
                     }
@@ -284,7 +317,7 @@ static LockState ProcessBlock(
 
             if (ShouldEnter) {
                 State = AnalyzeFunctionBody(
-                    Definition, Context, State, Result, CallStack, NewParamMap, ThreadId);
+                    Definition, Context, State, Result, CallStack, NewParamMap, ThreadId, CreatedInLoop);
             }
         }
     }
@@ -299,16 +332,12 @@ static LockState ComputeLockPairs(
     ASTContext &Context,
     CallStackMap &CallStack,
     const std::map<std::string, std::string> &ParamMap,
-    const std::string &ThreadId) {
+    const std::string &ThreadId,
+    std::set<std::string> &CreatedInLoop) {
 
     std::map<const CFGBlock*, LockState> StateAtEntry;
     std::map<const CFGBlock*, bool> Visited;
     std::vector<const CFGBlock*> Worklist;
-    // NOVO: "kutija" parova PO BLOKU - svaki prolaz kroz ProcessBlock za
-    // dati blok PREPISUJE staru vrednost, umesto da se dodaje pored nje.
-    // Ovo sprecava da parovi iz privremenih, nekonvergiranih fixpoint
-    // prolaza (npr. blok posle petlje, obradjen vise puta dok se stanje
-    // ne stabilizuje) ostanu trajno u finalnom Result-u.
     std::map<const CFGBlock*, std::vector<LockPair>> PairsAtBlock;
 
     const CFGBlock *Entry = &Cfg.getEntry();
@@ -323,7 +352,7 @@ static LockState ComputeLockPairs(
         LockState InState = StateAtEntry[Block];
         std::vector<LockPair> BlockPairs;
         LockState OutState = ProcessBlock(
-            Block, InState, BlockPairs, Context, CallStack, ParamMap, ThreadId);
+            Block, InState, BlockPairs, Context, CallStack, ParamMap, ThreadId, CreatedInLoop);
         PairsAtBlock[Block] = BlockPairs;
 
         for (const CFGBlock::AdjacentBlock &Succ : Block->succs()) {
@@ -352,9 +381,6 @@ static LockState ComputeLockPairs(
         }
     }
 
-    // NOVO: tek SAD, kad je fixpoint dostignut, pokupi parove iz svih
-    // "kutija" - svaka kutija sadrzi samo parove iz POSLEDNJEG (finalnog)
-    // prolaza kroz taj blok.
     for (const auto &Entry2 : PairsAtBlock) {
         Result.insert(Result.end(), Entry2.second.begin(), Entry2.second.end());
     }
@@ -374,7 +400,8 @@ static LockState AnalyzeFunctionBody(
     std::vector<LockPair> &Result,
     CallStackMap &CallStack,
     const std::map<std::string, std::string> &ParamMap,
-    const std::string &ThreadId) {
+    const std::string &ThreadId,
+    std::set<std::string> &CreatedInLoop) {
 
     if (!FD->hasBody()) return InitialState;
 
@@ -390,7 +417,7 @@ static LockState AnalyzeFunctionBody(
 
     CallStack[FD] = CallContext{InitialState, ParamMap};
     LockState OutState = ComputeLockPairs(
-        *Cfg, InitialState, Result, Context, CallStack, ParamMap, ThreadId);
+        *Cfg, InitialState, Result, Context, CallStack, ParamMap, ThreadId, CreatedInLoop);
 
     if (HadPrevious) {
         CallStack[FD] = PreviousValue;
@@ -401,7 +428,8 @@ static LockState AnalyzeFunctionBody(
     return OutState;
 }
 
-std::vector<LockPair> FindLockOrderPairs(FunctionDecl *FD, ASTContext &Context) {
+std::vector<LockPair> FindLockOrderPairs(FunctionDecl *FD, ASTContext &Context,
+                                          std::set<std::string> &CreatedInLoop) {
     std::vector<LockPair> Result;
     CallStackMap CallStack;
     LockState InitialState;
@@ -409,7 +437,7 @@ std::vector<LockPair> FindLockOrderPairs(FunctionDecl *FD, ASTContext &Context) 
 
     std::string ThreadId = FD->getNameAsString();
 
-    AnalyzeFunctionBody(FD, Context, InitialState, Result, CallStack, EmptyParamMap, ThreadId);
+    AnalyzeFunctionBody(FD, Context, InitialState, Result, CallStack, EmptyParamMap, ThreadId, CreatedInLoop);
 
     return Result;
 }

@@ -104,9 +104,15 @@ static LockState ProcessBlock(
                 auto HandleIt = State.ThreadHandles.find(TidName);
                 if (HandleIt != State.ThreadHandles.end()) {
                     State.JoinedThreads.insert(HandleIt->second);
-                    // Invalidacija SAMO na strani roditelja - analogno unlock-u.
-                    State.MustActiveThreads.erase(HandleIt->second);
-                    State.MayActiveThreads.erase(HandleIt->second);
+                    // Isto ogranicenje kao HasJoinPrecedence za deadlock: ako je ova
+                    // nit kreirana u petlji, join na jednoj konkretnoj instanci NE
+                    // garantuje da su SVE instance gotove - ne smemo je ukloniti iz
+                    // Active skupova, jer bi to laznо negativno "sakrilo" race sa
+                    // instancama koje jos rade.
+                    if (!CreatedInLoop.count(HandleIt->second)) {
+                        State.MustActiveThreads.erase(HandleIt->second);
+                        State.MayActiveThreads.erase(HandleIt->second);
+                    }
                 }
             }
             continue;

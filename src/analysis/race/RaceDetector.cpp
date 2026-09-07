@@ -25,21 +25,22 @@ static bool IsMayConcurrent(const MemoryAccess &A, const MemoryAccess &B) {
            B.MayActiveThreads.count(A.ThreadId) > 0;
 }
 
-// MustProtected(A,B): dele bravu koju OBOJE SIGURNO drze.
 static bool IsMustProtected(const MemoryAccess &A, const MemoryAccess &B) {
     for (const auto &EntryA : A.MustLockset) {
-        if (B.MustLockset.count(EntryA.first)) {
+        auto ItB = B.MustLockset.find(EntryA.first);
+        if (ItB == B.MustLockset.end()) continue;
+        if (EntryA.second == LockKind::Write || ItB->second == LockKind::Write) {
             return true;
         }
     }
     return false;
 }
 
-// MayProtected(A,B): dele bravu koju OBOJE MOZDA drze - siri, slabiji uslov
-// od MustProtected (MustProtected povlaci MayProtected, nikad obrnuto).
 static bool IsMayProtected(const MemoryAccess &A, const MemoryAccess &B) {
     for (const auto &EntryA : A.MayLockset) {
-        if (B.MayLockset.count(EntryA.first)) {
+        auto ItB = B.MayLockset.find(EntryA.first);
+        if (ItB == B.MayLockset.end()) continue;
+        if (EntryA.second == LockKind::Write || ItB->second == LockKind::Write) {
             return true;
         }
     }

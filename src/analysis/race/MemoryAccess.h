@@ -6,19 +6,17 @@
 #include <set>
 #include <string>
 
-// Jedan zapis "nit ThreadId je [Read/Write] pristupila promenljivoj
-// VarName, dok je drzala lockset Locks". Analogno LockPair-u kod
-// deadlocka, samo sto ovde nije ivica u grafu vec pojedinacni dogadjaj -
-// RaceDetector kasnije uporedjuje SVAKI PAR dogadjaja (razlicite niti,
-// bar jedan Write, prazan presek lockset-a, bez join precedence).
 struct MemoryAccess {
     std::string VarName;
     bool IsWrite = false;
-    std::map<std::string, LockKind> Lockset;   // State.Must u trenutku pristupa
+    std::map<std::string, LockKind> MustLockset;   // State.Must u trenutku pristupa (preimenovano iz Lockset)
+    std::map<std::string, LockKind> MayLockset;     // NOVO - State.May u trenutku pristupa
     std::set<std::string> JoinedThreads;
     bool CreatedInLoop = false;
     std::string ThreadId;
     unsigned Line = 0;
+    std::set<std::string> MustActiveThreads;
+    std::set<std::string> MayActiveThreads;
 };
 
 #endif

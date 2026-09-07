@@ -65,6 +65,19 @@ static LockState ProcessBlock(
                             LockState EmptyState;
                             EmptyState.ThreadHandles = State.ThreadHandles;
                             EmptyState.JoinedThreads = State.JoinedThreads;
+                            // Dete nasledjuje roditeljev trenutni MustActive/MayActive u ovoj tacki
+                            // CFG-a (vec spojen preko grananja, ako ga je bilo pre ovog poziva), plus
+                            // roditeljev ThreadId ulazi u oba - roditelj je garantovano aktivan tokom
+                            // celog detetovog zivota (vidi napomenu u LockState.h).
+                            EmptyState.MustActiveThreads = State.MustActiveThreads;
+                            EmptyState.MustActiveThreads.insert(ThreadId);
+                            EmptyState.MayActiveThreads = State.MayActiveThreads;
+                            EmptyState.MayActiveThreads.insert(ThreadId);
+
+                            // Roditelj takodje belezi da dete postoji u SVOM MustActive/MayActive -
+                            // simetricno detetu.
+                            State.MustActiveThreads.insert(NewThreadId);
+                            State.MayActiveThreads.insert(NewThreadId);
 
                             std::map<std::string, std::string> EmptyParamMap;
                             CallContext EmptyContext{EmptyState, EmptyParamMap};
@@ -91,6 +104,9 @@ static LockState ProcessBlock(
                 auto HandleIt = State.ThreadHandles.find(TidName);
                 if (HandleIt != State.ThreadHandles.end()) {
                     State.JoinedThreads.insert(HandleIt->second);
+                    // Invalidacija SAMO na strani roditelja - analogno unlock-u.
+                    State.MustActiveThreads.erase(HandleIt->second);
+                    State.MayActiveThreads.erase(HandleIt->second);
                 }
             }
             continue;
@@ -179,6 +195,8 @@ static LockState ComputeFixpoint(
                 NewState.ThreadHandles = OutState.ThreadHandles;
                 MergeThreadHandlesInto(NewState.ThreadHandles, Existing.ThreadHandles);
                 NewState.JoinedThreads = IntersectJoinedThreads(OutState.JoinedThreads, Existing.JoinedThreads);
+                NewState.MustActiveThreads = IntersectActiveThreads(OutState.MustActiveThreads, Existing.MustActiveThreads);
+                NewState.MayActiveThreads = UnionActiveThreads(OutState.MayActiveThreads, Existing.MayActiveThreads);
             }
 
             if (StateAtEntry.find(SuccBlock) == StateAtEntry.end() ||

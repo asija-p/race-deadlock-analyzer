@@ -21,6 +21,9 @@ add_executable(analyzer
     src/analysis/common/CFGUtils.cpp
     src/analysis/common/LockState.cpp
     src/analysis/common/InterproceduralWalker.cpp
+    src/analysis/race/RaceAnalyzer.cpp
+    src/analysis/race/RaceDetector.cpp
+    src/analysis/common/LockRecognition.cpp
 )
 
 target_include_directories(analyzer PRIVATE

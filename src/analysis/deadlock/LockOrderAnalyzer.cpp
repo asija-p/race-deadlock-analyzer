@@ -3,6 +3,7 @@
 #include "../common/InterproceduralWalker.h"
 #include "../common/LockState.h"
 #include <map>
+#include "../common/LockRecognition.h"
 
 // Sve sto je ostalo u ovom fajlu je CISTO deadlock-specificno: prepoznavanje
 // pthread_mutex/rwlock/spin lock i unlock poziva i generisanje LockPair
@@ -14,22 +15,15 @@ public:
     explicit DeadlockVisitor(std::vector<LockPair> &Result) : Result(Result) {}
 
     bool OnCallExpr(const CallExpr *Call, const FunctionDecl * /*Callee*/,
-                     const std::string &FuncName, LockState &State,
-                     const CFGBlock * /*Block*/,
-                     const std::map<std::string, std::string> &ParamMap,
-                     const std::string &ThreadId,
-                     ASTContext & /*Context*/,
-                     const std::set<std::string> &CreatedInLoop) override {
+                    const std::string &FuncName, LockState &State,
+                    const CFGBlock * /*Block*/,
+                    const std::map<std::string, std::string> &ParamMap,
+                    const std::string &ThreadId,
+                    ASTContext & /*Context*/,
+                    const std::set<std::string> &CreatedInLoop) override {
 
-        bool IsWriteLock = (FuncName == "pthread_mutex_lock" || FuncName == "pthread_mutex_trylock" ||
-                             FuncName == "pthread_spin_lock" || FuncName == "pthread_spin_trylock" ||
-                             FuncName == "pthread_rwlock_wrlock" || FuncName == "pthread_rwlock_trywrlock");
-        bool IsReadLock = (FuncName == "pthread_rwlock_rdlock" || FuncName == "pthread_rwlock_tryrdlock");
-        bool IsUnlock = (FuncName == "pthread_mutex_unlock" ||
-                          FuncName == "pthread_spin_unlock" ||
-                          FuncName == "pthread_rwlock_unlock");
-
-        if (!IsWriteLock && !IsReadLock && !IsUnlock) {
+        LockCallKind Kind = ClassifyLockCall(FuncName);
+        if (Kind == LockCallKind::NotALock) {
             // Nije lock/unlock poziv - nije nas posao, pusti Walkeru da
             // uradi generic interproceduralni ulazak (ako funkcija ima telo).
             return false;
@@ -40,8 +34,8 @@ public:
         std::string RawName = ExtractVarName(Call->getArg(0));
         std::string MutexName = ResolveName(RawName, ParamMap);
 
-        if (IsWriteLock || IsReadLock) {
-            LockKind NewKind = IsWriteLock ? LockKind::Write : LockKind::Read;
+        if (Kind == LockCallKind::WriteLock || Kind == LockCallKind::ReadLock) {
+            LockKind NewKind = (Kind == LockCallKind::WriteLock) ? LockKind::Write : LockKind::Read;
 
             for (const auto &PrevEntry : State.May) {
                 LockPair P;
@@ -57,12 +51,9 @@ public:
                 P.ThreadId = ThreadId;
                 BlockBuffer.push_back(P);
             }
-            State.May[MutexName] = NewKind;
-            State.Must[MutexName] = NewKind;
-        } else {
-            State.May.erase(MutexName);
-            State.Must.erase(MutexName);
         }
+
+        ApplyLockCallToState(Kind, MutexName, State);
 
         // Lock/unlock su spoljne (libpthread) funkcije bez tela - obradjeno
         // je, Walker ne treba da pokusava interproceduralni ulazak.

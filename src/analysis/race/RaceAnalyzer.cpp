@@ -3,7 +3,9 @@
 #include "../common/InterproceduralWalker.h"
 #include "../common/LockState.h"
 #include <clang/AST/RecursiveASTVisitor.h>
+#include <clang/Basic/SourceManager.h>
 #include <map>
+#include "../common/LockRecognition.h"
 
 // SKELET - pokazuje MEHANIZAM prikljucenja na deljeni InterproceduralWalker,
 // ne konacan algoritam. Ono sto realno jos treba doraditi (namerno
@@ -28,14 +30,26 @@ public:
 
     // Race analizi ne trebaju posebni pozivi funkcija (osim mozda atomic_*
     // primitiva u buducnosti) - pusti Walkeru generic interproceduralni ulazak.
-    bool OnCallExpr(const CallExpr *, const FunctionDecl *,
-                     const std::string &, LockState &,
-                     const CFGBlock *,
-                     const std::map<std::string, std::string> &,
-                     const std::string &,
-                     ASTContext &,
-                     const std::set<std::string> &) override {
-        return false;
+    bool OnCallExpr(const CallExpr *Call, const FunctionDecl *,
+                    const std::string &FuncName, LockState &State,
+                    const CFGBlock *,
+                    const std::map<std::string, std::string> &ParamMap,
+                    const std::string &,
+                    ASTContext &,
+                    const std::set<std::string> &) override {
+
+        LockCallKind Kind = ClassifyLockCall(FuncName);
+        if (Kind == LockCallKind::NotALock) {
+            return false;
+        }
+
+        if (Call->getNumArgs() == 0) return true;
+
+        std::string RawName = ExtractVarName(Call->getArg(0));
+        std::string MutexName = ResolveName(RawName, ParamMap);
+        ApplyLockCallToState(Kind, MutexName, State);
+
+        return true;
     }
 
     void OnStmt(const Stmt *S, LockState &State, const CFGBlock *,
@@ -53,8 +67,11 @@ public:
         MemoryAccess Access;
         Access.VarName = VarName;
         Access.IsWrite = true;
-        Access.Lockset = State.Must;
+        Access.MustLockset = State.Must;
+        Access.MayLockset = State.May;
         Access.JoinedThreads = State.JoinedThreads;
+        Access.MustActiveThreads = State.MustActiveThreads;
+        Access.MayActiveThreads = State.MayActiveThreads;
         Access.CreatedInLoop = CreatedInLoop.count(ThreadId) > 0;
         Access.ThreadId = ThreadId;
         Access.Line = Context.getSourceManager().getSpellingLineNumber(S->getBeginLoc());

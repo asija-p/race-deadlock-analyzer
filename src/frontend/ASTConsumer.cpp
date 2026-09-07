@@ -3,6 +3,8 @@
 #include "CFGPrinter.h"
 #include "../analysis/deadlock/LockOrderAnalyzer.h"
 #include "../analysis/deadlock/CycleDetector.h"
+#include "../analysis/race/RaceAnalyzer.h"
+#include "../analysis/race/RaceDetector.h"
 
 bool QuietMode = false;
 
@@ -13,6 +15,7 @@ void DumpASTConsumer::HandleTranslationUnit(ASTContext &Context) {
     CallFinderVisitor Visitor(SM);
     std::vector<LockPair> AllPairs;
     std::set<std::string> CreatedInLoop;
+    std::vector<MemoryAccess> AllAccesses;
 
     for (Decl *D : TU->decls()) {
         if (!SM.isInMainFile(D->getLocation())) {
@@ -34,6 +37,12 @@ void DumpASTConsumer::HandleTranslationUnit(ASTContext &Context) {
                 std::vector<LockPair> Pairs = FindLockOrderPairs(FD, Context, CreatedInLoop);
                 for (const LockPair &P : Pairs) {
                     AllPairs.push_back(P);
+                }
+
+                std::set<std::string> RaceCreatedInLoop;
+                std::vector<MemoryAccess> Accesses = FindMemoryAccesses(FD, Context, RaceCreatedInLoop);
+                for (const MemoryAccess &A : Accesses) {
+                    AllAccesses.push_back(A);
                 }
             }
         }
@@ -67,11 +76,64 @@ void DumpASTConsumer::HandleTranslationUnit(ASTContext &Context) {
             std::cout << T << "\n";
         }
     }
+
+    std::cout << "\n=== SVI pristupi promenljivama (MemoryAccess) ===\n";
+    for (const MemoryAccess &A : AllAccesses) {
+        std::cout << A.VarName << " " << (A.IsWrite ? "WRITE" : "READ")
+                   << "  | ThreadId=" << A.ThreadId
+                   << "  | Line=" << A.Line
+                   << "  | MustLockset={";
+        bool firstL = true;
+        for (const auto &L : A.MustLockset) {
+            if (!firstL) std::cout << ",";
+            std::cout << L.first;
+            firstL = false;
+        }
+        std::cout << "}  | MayLockset={";
+        bool firstML = true;
+        for (const auto &L : A.MayLockset) {
+            if (!firstML) std::cout << ",";
+            std::cout << L.first;
+            firstML = false;
+        }
+        std::cout << "}\n";
+    }
+
+    auto Races = FindRaces(AllAccesses);
+    std::cout << "\n=== PRONADJENI RACE PAROVI ===\n";
+    if (Races.empty()) {
+        std::cout << "(nijedan)\n";
+    } else {
+        for (const auto &Report : Races) {
+            std::cout << (Report.Severity == RaceSeverity::MustRace ? "[MUST-RACE] " : "[MAY-RACE]  ")
+                       << Report.A.VarName
+                       << "  [" << Report.A.ThreadId << " Linija " << Report.A.Line << "]"
+                       << " <-> "
+                       << "[" << Report.B.ThreadId << " Linija " << Report.B.Line << "]\n";
+        }
+    }
     }
 
     auto Cycles = FindCycles(AllPairs);
 
     if (QuietMode) {
+        auto Races = FindRaces(AllAccesses);
+        if (!Races.empty()) {
+            std::cout << "RACE\n";
+            for (const auto &Report : Races) {
+                std::cout << Report.A.VarName << "|"
+                           << Report.A.Line << "|"
+                           << Report.A.ThreadId << "|"
+                           << (Report.Severity == RaceSeverity::MustRace ? "MUST" : "MAY") << "\n";
+                std::cout << Report.B.VarName << "|"
+                           << Report.B.Line << "|"
+                           << Report.B.ThreadId << "|"
+                           << (Report.Severity == RaceSeverity::MustRace ? "MUST" : "MAY") << "\n";
+            }
+        } else {
+            std::cout << "NO_RACE\n";
+        }
+
         if (!Cycles.empty()) {
             std::cout << "DEADLOCK\n";
             for (const auto &Cycle : Cycles) {

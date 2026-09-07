@@ -49,3 +49,18 @@ void MergeThreadHandlesInto(std::map<std::string, std::string> &Target,
         Target.insert(Entry);
     }
 }
+
+std::set<std::string> UnionActiveThreads(
+    const std::set<std::string> &A, const std::set<std::string> &B) {
+    std::set<std::string> Result = A;
+    Result.insert(B.begin(), B.end());
+    return Result;
+}
+
+std::set<std::string> IntersectActiveThreads(
+    const std::set<std::string> &A, const std::set<std::string> &B) {
+    std::set<std::string> Result;
+    std::set_intersection(A.begin(), A.end(), B.begin(), B.end(),
+                           std::inserter(Result, Result.begin()));
+    return Result;
+}

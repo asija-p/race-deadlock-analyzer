@@ -12,6 +12,11 @@ struct TestCase {
     std::string FilePath;
     bool ExpectDeadlock;
     std::set<std::pair<std::string,std::string>> ExpectedEdges;
+    bool ExpectRace = false;
+    std::set<std::string> ExpectedRaceVars;
+    // Ako je ExpectRace true, ovo je ocekivana ozbiljnost ("MUST" ili "MAY").
+    // Prazan string = ne proveravaj ozbiljnost (za stare testove bez ovog polja).
+    std::string ExpectedSeverity = "";
 };
 
 // Pokrece komandu kao subprocess, vraca njen ceo stdout izlaz kao string
@@ -29,20 +34,62 @@ static std::string RunCommand(const std::string &Command) {
 }
 
 struct ActualResult {
-    bool HasDeadlock;
+    bool HasDeadlock = false;
     std::set<std::pair<std::string,std::string>> Edges;
+    bool HasRace = false;
+    std::set<std::string> RaceVars;
+    // Skup svih ozbiljnosti vidjenih u izlazu (moze imati i "MUST" i "MAY"
+    // ako ima vise race parova razlicite ozbiljnosti).
+    std::set<std::string> RaceSeverities;
 };
 
-// Parsira izlaz analyzer-a (--quiet mod): "DEADLOCK\nm1->m2,m2->m1\n" ili "SAFE\n"
+// Parsira izlaz analyzer-a (--quiet mod):
+// "RACE\nx|6|create_line_12|MUST\nx|13|main|MUST\nDEADLOCK\nm1->m2,m2->m1\n"
+// ili "NO_RACE\nSAFE\n" (i sve kombinacije izmedju).
 static ActualResult ParseAnalyzerOutput(const std::string &Output) {
     ActualResult Res;
-    Res.HasDeadlock = false;
 
     std::istringstream Stream(Output);
-    std::string FirstLine;
-    std::getline(Stream, FirstLine);
+    std::string Line;
 
-    if (FirstLine == "DEADLOCK") {
+    // --- RACE / NO_RACE sekcija (uvek prva) ---
+    if (!std::getline(Stream, Line)) return Res;
+
+    if (Line == "RACE") {
+        Res.HasRace = true;
+        // Cita RACE parove dok ne naidje na DEADLOCK/SAFE liniju (pocetak
+        // sledece sekcije), koju onda mora da "vrati" na obradu ispod.
+        while (std::getline(Stream, Line)) {
+            if (Line == "DEADLOCK" || Line == "SAFE") {
+                break;
+            }
+            if (Line.empty()) continue;
+
+            // Format: promenljiva|linija|thread|ozbiljnost
+            size_t Sep1 = Line.find('|');
+            if (Sep1 == std::string::npos) continue;
+            Res.RaceVars.insert(Line.substr(0, Sep1));
+
+            size_t Sep2 = Line.find('|', Sep1 + 1);
+            size_t Sep3 = (Sep2 == std::string::npos) ? std::string::npos
+                                                        : Line.find('|', Sep2 + 1);
+            if (Sep3 != std::string::npos) {
+                Res.RaceSeverities.insert(Line.substr(Sep3 + 1));
+            }
+        }
+        // "Line" sad sadrzi DEADLOCK/SAFE liniju (ili je stream prazan) -
+        // nastavljamo obradu od nje dole, bez ponovnog getline.
+    } else if (Line == "NO_RACE") {
+        Res.HasRace = false;
+        if (!std::getline(Stream, Line)) return Res;
+    } else {
+        // Neocekivan format (npr. stari analyzer bez race izlaza) -
+        // tretiraj ovu liniju kao pocetak DEADLOCK/SAFE sekcije direktno,
+        // da stariji testovi i dalje rade bez izmene.
+    }
+
+    // --- DEADLOCK / SAFE sekcija ---
+    if (Line == "DEADLOCK") {
         Res.HasDeadlock = true;
         std::string EdgeLine;
         while (std::getline(Stream, EdgeLine)) {
@@ -74,6 +121,17 @@ static void PrintEdgeSet(const std::set<std::pair<std::string,std::string>> &S) 
     std::cout << "}";
 }
 
+static void PrintStringSet(const std::set<std::string> &S) {
+    std::cout << "{";
+    bool First = true;
+    for (const auto &V : S) {
+        if (!First) std::cout << ", ";
+        std::cout << V;
+        First = false;
+    }
+    std::cout << "}";
+}
+
 int main(int argc, char** argv) {
     std::vector<TestCase> Tests = {
         {"tests/deadlock/interprocedural_deadlock.c", true, {{"m1","m2"}, {"m2","m1"}}},
@@ -100,9 +158,16 @@ int main(int argc, char** argv) {
         {"tests/deadlock/deref_dot_normalization_deadlock.c", true, {{"p.lock1","p.lock2"}, {"p.lock2","p.lock1"}}},   
         {"tests/safe/join_removes_false_deadlock_safe.c", false, {}},
         {"tests/deadlock/create_without_join_deadlock.c", true, {{"m1","m2"}, {"m2","m1"}}},
+        {"tests/deadlock/all_same_thread_deadlock.c", true, {{"m1","m2"}, {"m2","m1"}}},
         {"tests/safe/join_before_branch_still_safe.c", false, {}},
         {"tests/deadlock/test_loop_deadlock.c", true, {{"m1","m2"}, {"m2","m1"}}},
-        {"tests/deadlock/nested_call_same_block_deadlock.c", true, {{"m1","m2"}, {"m2","m1"}}}
+        {"tests/deadlock/nested_call_same_block_deadlock.c", true, {{"m1","m2"}, {"m2","m1"}}},
+        {"tests/race/basic_race.c", false, {}, true, {"x"}, "MUST"},
+        {"tests/race/must_race.c", false, {}, true, {"x"}, "MUST"},
+        {"tests/race/protected_no_race.c", false, {}, false, {}},
+        {"tests/race/may_race.c", false, {}, true, {"x"}, "MAY"},
+        {"tests/race/loop_race.c", false, {}, true, {"x"}, "MAY"},
+        {"tests/safe/same_thread_safe.c", false, {}},
     };
     std::string Filter;
     if (argc >= 2) {
@@ -114,7 +179,6 @@ int main(int argc, char** argv) {
         TestsToRun = Tests;
     } else {
         for (const TestCase &Test : Tests) {
-            // Poklapanje ako se Filter nalazi negde u putanji (npr. "wrapper" pronadje wrapper_example.c)
             if (Test.FilePath.find(Filter) != std::string::npos) {
                 TestsToRun.push_back(Test);
             }
@@ -133,24 +197,58 @@ int main(int argc, char** argv) {
         std::string Output = RunCommand(Command);
         ActualResult Actual = ParseAnalyzerOutput(Output);
 
-        bool Match = (Actual.HasDeadlock == Test.ExpectDeadlock);
-        if (Match && Test.ExpectDeadlock) {
-            Match = (Actual.Edges == Test.ExpectedEdges);
+        bool DeadlockMatch = (Actual.HasDeadlock == Test.ExpectDeadlock);
+        if (DeadlockMatch && Test.ExpectDeadlock) {
+            DeadlockMatch = (Actual.Edges == Test.ExpectedEdges);
         }
+
+        bool RaceMatch = (Actual.HasRace == Test.ExpectRace);
+        if (RaceMatch && Test.ExpectRace) {
+            RaceMatch = (Actual.RaceVars == Test.ExpectedRaceVars);
+            if (RaceMatch && !Test.ExpectedSeverity.empty()) {
+                RaceMatch = Actual.RaceSeverities.count(Test.ExpectedSeverity) > 0;
+            }
+        }
+
+        bool Match = DeadlockMatch && RaceMatch;
 
         if (Match) {
             std::cout << "[PASS] " << Test.FilePath << "\n";
-            std::cout << "  Dobijeno: " << (Actual.HasDeadlock ? "DEADLOCK, ciklus " : "SAFE");
+            std::cout << "  Deadlock: " << (Actual.HasDeadlock ? "DEADLOCK, ciklus " : "SAFE");
             if (Actual.HasDeadlock) PrintEdgeSet(Actual.Edges);
+            std::cout << "\n";
+            std::cout << "  Race: " << (Actual.HasRace ? "RACE, promenljive " : "NO_RACE");
+            if (Actual.HasRace) {
+                PrintStringSet(Actual.RaceVars);
+                std::cout << " (";
+                PrintStringSet(Actual.RaceSeverities);
+                std::cout << ")";
+            }
             std::cout << "\n";
             Passed++;
         } else {
             std::cout << "[FAIL] " << Test.FilePath << "\n";
-            std::cout << "  Dobijeno:  " << (Actual.HasDeadlock ? "DEADLOCK, ciklus " : "SAFE");
+            std::cout << "  Dobijeno  - Deadlock: " << (Actual.HasDeadlock ? "DEADLOCK, ciklus " : "SAFE");
             if (Actual.HasDeadlock) PrintEdgeSet(Actual.Edges);
             std::cout << "\n";
-            std::cout << "  Ocekivano: " << (Test.ExpectDeadlock ? "DEADLOCK, ciklus " : "SAFE");
+            std::cout << "  Ocekivano - Deadlock: " << (Test.ExpectDeadlock ? "DEADLOCK, ciklus " : "SAFE");
             if (Test.ExpectDeadlock) PrintEdgeSet(Test.ExpectedEdges);
+            std::cout << "\n";
+            std::cout << "  Dobijeno  - Race: " << (Actual.HasRace ? "RACE, promenljive " : "NO_RACE");
+            if (Actual.HasRace) {
+                PrintStringSet(Actual.RaceVars);
+                std::cout << " (";
+                PrintStringSet(Actual.RaceSeverities);
+                std::cout << ")";
+            }
+            std::cout << "\n";
+            std::cout << "  Ocekivano - Race: " << (Test.ExpectRace ? "RACE, promenljive " : "NO_RACE");
+            if (Test.ExpectRace) {
+                PrintStringSet(Test.ExpectedRaceVars);
+                if (!Test.ExpectedSeverity.empty()) {
+                    std::cout << " (" << Test.ExpectedSeverity << ")";
+                }
+            }
             std::cout << "\n";
         }
     }

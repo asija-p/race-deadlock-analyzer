@@ -11,52 +11,61 @@
 //
 //  - May/Must: trenutni skup brava koje se "mogu" (May, unija preko grana)
 //    odnosno "moraju" (Must, presek preko grana) drzati u datoj tacki.
-//    Deadlocku treba May da uporedi "prethodno drzane" brave pri svakom
-//    novom lock() pozivu; race analizi (Eraser-style lockset algoritam)
-//    treba Must kao "lockset" koji vazi za svaki memory access.
 //
 //  - ThreadHandles/JoinedThreads: happens-before knjigovodstvo izgradjeno
-//    iz pthread_create/pthread_join poziva. Generic je za obe analize -
-//    obema treba da iskljuce parove (lock-ivica ili memory access) koji su
-//    stvarno sekvencijalno poredjani preko fork/join, a ne stvarno konkurentni.
+//    iz pthread_create/pthread_join poziva.
+//
+//  - MustActiveThreads/MayActiveThreads: koje niti su SIGURNO (Must) odnosno
+//    MOZDA (May) trenutno aktivne "zajedno sa mnom", iz MOJE perspektive.
+//    Dete NASLEDJUJE oba skupa od roditelja u trenutku pthread_create (plus
+//    roditeljev ThreadId ulazi u oba), i NIKAD ih sam ne invalidira - dete
+//    zna da je roditelj aktivan tokom CELOG svog zivota, jer pthread_join
+//    na strani roditelja fizicki ne moze da se zavrsi pre nego sto dete
+//    zavrsi (vidi diskusiju uz ovaj commit). Invalidacija (uklanjanje
+//    deteta iz ovih skupova) se desava SAMO na strani roditelja, pri
+//    pthread_join, analogno unlock-u za brave.
 struct LockState {
     std::map<std::string, LockKind> May;
     std::map<std::string, LockKind> Must;
     std::map<std::string, std::string> ThreadHandles;  // "tid" ime -> ThreadId
     std::set<std::string> JoinedThreads;                // koje niti su SIGURNO gotove
+    std::set<std::string> MustActiveThreads;            // NOVO
+    std::set<std::string> MayActiveThreads;             // NOVO
 
     bool operator==(const LockState &Other) const {
         return May == Other.May && Must == Other.Must &&
-               ThreadHandles == Other.ThreadHandles && JoinedThreads == Other.JoinedThreads;
+               ThreadHandles == Other.ThreadHandles && JoinedThreads == Other.JoinedThreads &&
+               MustActiveThreads == Other.MustActiveThreads &&
+               MayActiveThreads == Other.MayActiveThreads;
     }
     bool operator!=(const LockState &Other) const {
         return !(*this == Other);
     }
 };
 
-// Vraca skup imena kljuceva mape (npr. imena trenutno drzanih brava).
 std::set<std::string> KeysOf(const std::map<std::string, LockKind> &M);
 
-// Merge na spoju CFG grana za May: unija po kljucu, a ako se dva ulaza
-// razlikuju po LockKind-u (Read na jednoj grani, Write na drugoj), rezultat
-// je konzervativno Write.
 void MergeMayInto(std::map<std::string, LockKind> &Target,
                    const std::map<std::string, LockKind> &Source);
 
-// Merge na spoju CFG grana za Must: presek po kljucu (brava mora biti
-// drzana na SVIM granama da bi ostala u Must), a ako se LockKind razlikuje,
-// rezultat je konzervativno Read (ne moze se garantovati Write na obe grane).
 std::map<std::string, LockKind> IntersectMust(
     const std::map<std::string, LockKind> &A,
     const std::map<std::string, LockKind> &B);
 
-// Presek zavrsenih (joined) niti na spoju grana - nit je "sigurno gotova"
-// samo ako je to tacno na SVIM putanjama koje vode do te tacke.
 std::set<std::string> IntersectJoinedThreads(
     const std::set<std::string> &A, const std::set<std::string> &B);
 
-// Unija mape thread-handle-ova na spoju grana.
 void MergeThreadHandlesInto(std::map<std::string, std::string> &Target,
                              const std::map<std::string, std::string> &Source);
+
+// Unija skupova aktivnih niti na spoju grana (May-stil - MOZDA aktivan ako
+// je aktivan na BAR JEDNOJ grani).
+std::set<std::string> UnionActiveThreads(
+    const std::set<std::string> &A, const std::set<std::string> &B);
+
+// Presek skupova aktivnih niti na spoju grana (Must-stil - SIGURNO aktivan
+// samo ako je aktivan na SVIM granama).
+std::set<std::string> IntersectActiveThreads(
+    const std::set<std::string> &A, const std::set<std::string> &B);
 
 #endif

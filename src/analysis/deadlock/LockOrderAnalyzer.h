@@ -1,6 +1,7 @@
 #ifndef LOCKORDERANALYZER_H
 #define LOCKORDERANALYZER_H
 
+#include "../common/LockKind.h"
 #include <clang/AST/Decl.h>
 #include <clang/AST/ASTContext.h>
 #include <vector>
@@ -10,11 +11,8 @@
 
 using namespace clang;
 
-enum class LockKind {
-    Read,
-    Write
-};
-
+// Predstavlja jednu ivicu u grafu redosleda brava: "dok se drzi From,
+// akvirira se To". Deadlock-specificno - race analiza ovo ne koristi.
 struct LockPair {
     std::string From;
     std::string To;
@@ -24,7 +22,7 @@ struct LockPair {
     std::set<std::string> MustContextLocks;
     std::map<std::string, LockKind> MustContextKinds;
     std::set<std::string> JoinedThreads;
-    bool CreatedInLoop = false;   // NOVO - da li ThreadId ove ivice moze predstavljati VISE niti
+    bool CreatedInLoop = false;   // da li ThreadId ove ivice moze predstavljati VISE niti
     std::string ThreadId;
 
     bool operator<(const LockPair &Other) const {

@@ -102,6 +102,7 @@ int main(int argc, char** argv) {
         {"tests/deadlock/create_without_join_deadlock.c", true, {{"m1","m2"}, {"m2","m1"}}},
         {"tests/safe/join_before_branch_still_safe.c", false, {}},
         {"tests/deadlock/test_loop_deadlock.c", true, {{"m1","m2"}, {"m2","m1"}}},
+        {"tests/deadlock/nested_call_same_block_deadlock.c", true, {{"m1","m2"}, {"m2","m1"}}}
     };
     std::string Filter;
     if (argc >= 2) {

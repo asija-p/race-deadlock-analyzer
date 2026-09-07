@@ -1,200 +1,25 @@
 #include "LockOrderAnalyzer.h"
-#include <clang/Analysis/CFG.h>
-#include <iostream>
-#include <set>
+#include "../common/ASTUtils.h"
+#include "../common/InterproceduralWalker.h"
+#include "../common/LockState.h"
 #include <map>
-#include <algorithm>
-#include <iterator>
-#include <clang/Basic/SourceManager.h>
-#include <clang/AST/RecursiveASTVisitor.h>
 
-using namespace clang;
+// Sve sto je ostalo u ovom fajlu je CISTO deadlock-specificno: prepoznavanje
+// pthread_mutex/rwlock/spin lock i unlock poziva i generisanje LockPair
+// ivica. Sav CFG fixpoint, interproceduralna rekurzija i pthread_create/
+// pthread_join knjigovodstvo sad zivi u InterproceduralWalker-u (deljeno sa
+// buducom race analizom).
+class DeadlockVisitor : public AnalysisVisitor {
+public:
+    explicit DeadlockVisitor(std::vector<LockPair> &Result) : Result(Result) {}
 
-static std::string ExtractVarName(const Expr *Arg) {
-    Arg = Arg->IgnoreParenImpCasts();
-    if (auto *Unary = dyn_cast<UnaryOperator>(Arg)) {
-        Arg = Unary->getSubExpr()->IgnoreParenImpCasts();
-    }
-
-    if (auto *ArrSub = dyn_cast<ArraySubscriptExpr>(Arg)) {
-        std::string ArrayName = "?";
-        const Expr *Base = ArrSub->getBase()->IgnoreParenImpCasts();
-        if (auto *BaseRef = dyn_cast<DeclRefExpr>(Base)) {
-            ArrayName = BaseRef->getDecl()->getNameAsString();
-        }
-
-        const Expr *IndexExpr = ArrSub->getIdx()->IgnoreParenImpCasts();
-        if (auto *IntLit = dyn_cast<IntegerLiteral>(IndexExpr)) {
-            return ArrayName + "[" + std::to_string(IntLit->getValue().getSExtValue()) + "]";
-        }
-        return ArrayName + "[?]";
-    }
-
-    if (auto *Member = dyn_cast<MemberExpr>(Arg)) {
-        std::string BaseName = "?";
-        const Expr *Base = Member->getBase()->IgnoreParenImpCasts();
-        if (auto *DerefOp = dyn_cast<UnaryOperator>(Base)) {
-            if (DerefOp->getOpcode() == UO_Deref) {
-                Base = DerefOp->getSubExpr()->IgnoreParenImpCasts();
-            }
-        }
-        if (auto *BaseRef = dyn_cast<DeclRefExpr>(Base)) {
-            BaseName = BaseRef->getDecl()->getNameAsString();
-        }
-        std::string FieldName = Member->getMemberDecl()->getNameAsString();
-        return BaseName + "." + FieldName;
-    }
-
-    if (auto *Ref = dyn_cast<DeclRefExpr>(Arg)) {
-        return Ref->getDecl()->getNameAsString();
-    }
-    return "?";
-}
-
-static std::string ResolveName(const std::string &Name,
-                                 const std::map<std::string, std::string> &ParamMap) {
-    auto It = ParamMap.find(Name);
-    if (It != ParamMap.end()) {
-        return It->second;
-    }
-    return Name;
-}
-
-// Proverava da li je Start deo ciklusa u CFG grafu (tj. da li postoji put
-// napred od njegovih naslednika koji se vraca nazad na Start). Cista
-// dostiznost na statickoj strukturi grafa - NE zavisi od worklist fixpoint
-// obrade, pa ne pravi lazne pozitive na obicnom if/else grananju.
-static bool IsBlockInLoop(const CFGBlock *Start) {
-    std::set<const CFGBlock*> Visited;
-    std::vector<const CFGBlock*> Worklist;
-    for (const CFGBlock::AdjacentBlock &Succ : Start->succs()) {
-        if (Succ.isReachable()) {
-            Worklist.push_back(Succ.getReachableBlock());
-        }
-    }
-    while (!Worklist.empty()) {
-        const CFGBlock *B = Worklist.back();
-        Worklist.pop_back();
-        if (B == Start) return true;
-        if (Visited.count(B)) continue;
-        Visited.insert(B);
-        for (const CFGBlock::AdjacentBlock &Succ : B->succs()) {
-            if (Succ.isReachable()) {
-                Worklist.push_back(Succ.getReachableBlock());
-            }
-        }
-    }
-    return false;
-}
-
-struct LockState {
-    std::map<std::string, LockKind> May;
-    std::map<std::string, LockKind> Must;
-    std::map<std::string, std::string> ThreadHandles;  // "tid" ime -> ThreadId
-    std::set<std::string> JoinedThreads;                // koje niti su SIGURNO gotove
-
-    bool operator==(const LockState &Other) const {
-        return May == Other.May && Must == Other.Must &&
-               ThreadHandles == Other.ThreadHandles && JoinedThreads == Other.JoinedThreads;
-    }
-    bool operator!=(const LockState &Other) const {
-        return !(*this == Other);
-    }
-};
-
-static std::set<std::string> KeysOf(const std::map<std::string, LockKind> &M) {
-    std::set<std::string> Keys;
-    for (const auto &Entry : M) {
-        Keys.insert(Entry.first);
-    }
-    return Keys;
-}
-
-static void MergeMayInto(std::map<std::string, LockKind> &Target,
-                          const std::map<std::string, LockKind> &Source) {
-    for (const auto &Entry : Source) {
-        auto It = Target.find(Entry.first);
-        if (It == Target.end()) {
-            Target[Entry.first] = Entry.second;
-        } else if (It->second != Entry.second) {
-            It->second = LockKind::Write;
-        }
-    }
-}
-
-static std::map<std::string, LockKind> IntersectMust(
-    const std::map<std::string, LockKind> &A,
-    const std::map<std::string, LockKind> &B) {
-    std::map<std::string, LockKind> Result;
-    for (const auto &Entry : A) {
-        auto It = B.find(Entry.first);
-        if (It != B.end()) {
-            Result[Entry.first] = (Entry.second == It->second) ? Entry.second : LockKind::Read;
-        }
-    }
-    return Result;
-}
-
-static std::set<std::string> IntersectJoinedThreads(
-    const std::set<std::string> &A, const std::set<std::string> &B) {
-    std::set<std::string> Result;
-    std::set_intersection(A.begin(), A.end(), B.begin(), B.end(),
-                           std::inserter(Result, Result.begin()));
-    return Result;
-}
-
-static void MergeThreadHandlesInto(std::map<std::string, std::string> &Target,
-                                    const std::map<std::string, std::string> &Source) {
-    for (const auto &Entry : Source) {
-        Target.insert(Entry);
-    }
-}
-
-struct CallContext {
-    LockState State;
-    std::map<std::string, std::string> ParamMap;
-
-    bool operator==(const CallContext &Other) const {
-        return State == Other.State && ParamMap == Other.ParamMap;
-    }
-    bool operator!=(const CallContext &Other) const {
-        return !(*this == Other);
-    }
-};
-
-using CallStackMap = std::map<const FunctionDecl*, CallContext>;
-
-static LockState AnalyzeFunctionBody(
-    const FunctionDecl *FD,
-    ASTContext &Context,
-    LockState InitialState,
-    std::vector<LockPair> &Result,
-    CallStackMap &CallStack,
-    const std::map<std::string, std::string> &ParamMap,
-    const std::string &ThreadId,
-    std::set<std::string> &CreatedInLoop);
-
-static LockState ProcessBlock(
-    const CFGBlock *Block,
-    LockState State,
-    std::vector<LockPair> &Result,
-    ASTContext &Context,
-    CallStackMap &CallStack,
-    const std::map<std::string, std::string> &ParamMap,
-    const std::string &ThreadId,
-    std::set<std::string> &CreatedInLoop) {
-
-    for (const CFGElement &Elem : *Block) {
-        auto CS = Elem.getAs<CFGStmt>();
-        if (!CS) continue;
-        const Stmt *S = CS->getStmt();
-        auto *Call = dyn_cast<CallExpr>(S);
-        if (!Call) continue;
-
-        const FunctionDecl *Callee = Call->getDirectCallee();
-        if (!Callee) continue;
-
-        std::string FuncName = Callee->getNameAsString();
+    bool OnCallExpr(const CallExpr *Call, const FunctionDecl * /*Callee*/,
+                     const std::string &FuncName, LockState &State,
+                     const CFGBlock * /*Block*/,
+                     const std::map<std::string, std::string> &ParamMap,
+                     const std::string &ThreadId,
+                     ASTContext & /*Context*/,
+                     const std::set<std::string> &CreatedInLoop) override {
 
         bool IsWriteLock = (FuncName == "pthread_mutex_lock" || FuncName == "pthread_mutex_trylock" ||
                              FuncName == "pthread_spin_lock" || FuncName == "pthread_spin_trylock" ||
@@ -204,240 +29,105 @@ static LockState ProcessBlock(
                           FuncName == "pthread_spin_unlock" ||
                           FuncName == "pthread_rwlock_unlock");
 
-        if (IsWriteLock || IsReadLock || IsUnlock) {
-            if (Call->getNumArgs() == 0) continue;
-
-            std::string RawName = ExtractVarName(Call->getArg(0));
-            std::string MutexName = ResolveName(RawName, ParamMap);
-
-            if (IsWriteLock || IsReadLock) {
-                LockKind NewKind = IsWriteLock ? LockKind::Write : LockKind::Read;
-
-                for (const auto &PrevEntry : State.May) {
-                    LockPair P;
-                    P.From = PrevEntry.first;
-                    P.To = MutexName;
-                    P.FromKind = PrevEntry.second;
-                    P.ToKind = NewKind;
-                    P.ContextLocks = KeysOf(State.May);
-                    P.MustContextLocks = KeysOf(State.Must);
-                    P.MustContextKinds = State.Must;
-                    P.JoinedThreads = State.JoinedThreads;
-                    P.CreatedInLoop = CreatedInLoop.count(ThreadId) > 0;   // NOVO
-                    P.ThreadId = ThreadId;
-                    Result.push_back(P);
-                }
-                State.May[MutexName] = NewKind;
-                State.Must[MutexName] = NewKind;
-            } else {
-                State.May.erase(MutexName);
-                State.Must.erase(MutexName);
-            }
-            continue;
+        if (!IsWriteLock && !IsReadLock && !IsUnlock) {
+            // Nije lock/unlock poziv - nije nas posao, pusti Walkeru da
+            // uradi generic interproceduralni ulazak (ako funkcija ima telo).
+            return false;
         }
 
-        if (FuncName == "pthread_create") {
-            if (Call->getNumArgs() >= 3) {
-                unsigned Line = Context.getSourceManager()
-                                    .getSpellingLineNumber(Call->getBeginLoc());
-                std::string NewThreadId = "create_line_" + std::to_string(Line);
+        if (Call->getNumArgs() == 0) return true;
 
-                // NOVO: ako se ovaj pthread_create nalazi u petlji, isti
-                // NewThreadId moze predstavljati VISE razlicitih stvarnih
-                // niti (po jedna po iteraciji).
-                if (IsBlockInLoop(Block)) {
-                    CreatedInLoop.insert(NewThreadId);
-                }
+        std::string RawName = ExtractVarName(Call->getArg(0));
+        std::string MutexName = ResolveName(RawName, ParamMap);
 
-                std::string RawTidName = ExtractVarName(Call->getArg(0));
-                std::string TidName = ResolveName(RawTidName, ParamMap);
-                if (TidName != "?") {
-                    State.ThreadHandles[TidName] = NewThreadId;
-                }
+        if (IsWriteLock || IsReadLock) {
+            LockKind NewKind = IsWriteLock ? LockKind::Write : LockKind::Read;
 
-                const Expr *ThreadArg = Call->getArg(2)->IgnoreParenImpCasts();
-                if (auto *Cast = dyn_cast<CastExpr>(ThreadArg)) {
-                    ThreadArg = Cast->getSubExpr()->IgnoreParenImpCasts();
-                }
-                if (auto *Ref = dyn_cast<DeclRefExpr>(ThreadArg)) {
-                    if (auto *ThreadFD = dyn_cast<FunctionDecl>(Ref->getDecl())) {
-                        const FunctionDecl *ThreadDef = ThreadFD->getDefinition();
-                        if (ThreadDef && ThreadDef->hasBody()) {
-                            LockState EmptyState;
-                            EmptyState.ThreadHandles = State.ThreadHandles;
-                            EmptyState.JoinedThreads = State.JoinedThreads;
-
-                            std::map<std::string, std::string> EmptyParamMap;
-                            CallContext EmptyContext{EmptyState, EmptyParamMap};
-                            auto It = CallStack.find(ThreadDef);
-                            bool ShouldEnter = (It == CallStack.end()) ||
-                                                (It->second != EmptyContext);
-                            if (ShouldEnter) {
-                                AnalyzeFunctionBody(ThreadDef, Context, EmptyState, Result,
-                                                    CallStack, EmptyParamMap, NewThreadId, CreatedInLoop);
-                            }
-                        }
-                    }
-                }
+            for (const auto &PrevEntry : State.May) {
+                LockPair P;
+                P.From = PrevEntry.first;
+                P.To = MutexName;
+                P.FromKind = PrevEntry.second;
+                P.ToKind = NewKind;
+                P.ContextLocks = KeysOf(State.May);
+                P.MustContextLocks = KeysOf(State.Must);
+                P.MustContextKinds = State.Must;
+                P.JoinedThreads = State.JoinedThreads;
+                P.CreatedInLoop = CreatedInLoop.count(ThreadId) > 0;
+                P.ThreadId = ThreadId;
+                BlockBuffer.push_back(P);
             }
-            continue;
+            State.May[MutexName] = NewKind;
+            State.Must[MutexName] = NewKind;
+        } else {
+            State.May.erase(MutexName);
+            State.Must.erase(MutexName);
         }
 
-        if (FuncName == "pthread_join") {
-            if (Call->getNumArgs() >= 1) {
-                std::string RawTidName = ExtractVarName(Call->getArg(0));
-                std::string TidName = ResolveName(RawTidName, ParamMap);
-                auto HandleIt = State.ThreadHandles.find(TidName);
-                if (HandleIt != State.ThreadHandles.end()) {
-                    State.JoinedThreads.insert(HandleIt->second);
-                }
-            }
-            continue;
+        // Lock/unlock su spoljne (libpthread) funkcije bez tela - obradjeno
+        // je, Walker ne treba da pokusava interproceduralni ulazak.
+        return true;
+    }
+
+    void BeginBlock(const CFGBlock * /*Block*/) override {
+        BlockBuffer.clear();
+    }
+
+    void EndBlock(const CFGBlock *Block) override {
+        // Isto ponasanje kao originalni PairsAtBlock[Block] = BlockPairs:
+        // ako fixpoint ponovo obradi ovaj blok (jer mu se ulazno stanje
+        // promenilo), rezultati iz PRETHODNE obrade se odbacuju - u
+        // konacan Result ulazi samo poslednja obrada svakog bloka.
+        PairsAtBlock[Block] = BlockBuffer;
+    }
+
+    void EnterNestedCall() override {
+        SavedFrames.push_back({std::move(BlockBuffer), std::move(PairsAtBlock)});
+        BlockBuffer.clear();
+        PairsAtBlock.clear();
+    }
+
+    void ExitNestedCall() override {
+        BlockBuffer = std::move(SavedFrames.back().first);
+        PairsAtBlock = std::move(SavedFrames.back().second);
+        SavedFrames.pop_back();
+    }
+
+    void FlushCFG() override {
+        std::vector<LockPair> Flattened;
+        for (const auto &Entry : PairsAtBlock) {
+            Flattened.insert(Flattened.end(), Entry.second.begin(), Entry.second.end());
         }
+        PairsAtBlock.clear();
 
-        const FunctionDecl *Definition = Callee->getDefinition();
-        if (Definition && Definition->hasBody()) {
-
-            std::map<std::string, std::string> NewParamMap;
-            unsigned NumParams = Definition->getNumParams();
-            for (unsigned i = 0; i < Call->getNumArgs() && i < NumParams; i++) {
-                std::string ArgName = ExtractVarName(Call->getArg(i));
-                ArgName = ResolveName(ArgName, ParamMap);
-
-                std::string ParamName = Definition->getParamDecl(i)->getNameAsString();
-                if (ArgName != "?") {
-                    NewParamMap[ParamName] = ArgName;
-                }
-            }
-
-            CallContext NewContext{State, NewParamMap};
-            auto It = CallStack.find(Definition);
-            bool ShouldEnter = (It == CallStack.end()) ||
-                                (It->second != NewContext);
-
-            if (ShouldEnter) {
-                State = AnalyzeFunctionBody(
-                    Definition, Context, State, Result, CallStack, NewParamMap, ThreadId, CreatedInLoop);
-            }
+        if (SavedFrames.empty()) {
+            Result.insert(Result.end(), Flattened.begin(), Flattened.end());
+        } else {
+            SavedFrames.back().first.insert(
+                SavedFrames.back().first.end(), Flattened.begin(), Flattened.end());
         }
     }
 
-    return State;
-}
-
-static LockState ComputeLockPairs(
-    const CFG &Cfg,
-    LockState InitialState,
-    std::vector<LockPair> &Result,
-    ASTContext &Context,
-    CallStackMap &CallStack,
-    const std::map<std::string, std::string> &ParamMap,
-    const std::string &ThreadId,
-    std::set<std::string> &CreatedInLoop) {
-
-    std::map<const CFGBlock*, LockState> StateAtEntry;
-    std::map<const CFGBlock*, bool> Visited;
-    std::vector<const CFGBlock*> Worklist;
-    std::map<const CFGBlock*, std::vector<LockPair>> PairsAtBlock;
-
-    const CFGBlock *Entry = &Cfg.getEntry();
-    StateAtEntry[Entry] = InitialState;
-    Visited[Entry] = true;
-    Worklist.push_back(Entry);
-
-    while (!Worklist.empty()) {
-        const CFGBlock *Block = Worklist.back();
-        Worklist.pop_back();
-
-        LockState InState = StateAtEntry[Block];
-        std::vector<LockPair> BlockPairs;
-        LockState OutState = ProcessBlock(
-            Block, InState, BlockPairs, Context, CallStack, ParamMap, ThreadId, CreatedInLoop);
-        PairsAtBlock[Block] = BlockPairs;
-
-        for (const CFGBlock::AdjacentBlock &Succ : Block->succs()) {
-            if (!Succ.isReachable()) continue;
-            const CFGBlock *SuccBlock = Succ.getReachableBlock();
-
-            LockState NewState;
-            if (!Visited[SuccBlock]) {
-                NewState = OutState;
-                Visited[SuccBlock] = true;
-            } else {
-                const LockState &Existing = StateAtEntry[SuccBlock];
-                NewState.May = OutState.May;
-                MergeMayInto(NewState.May, Existing.May);
-                NewState.Must = IntersectMust(OutState.Must, Existing.Must);
-                NewState.ThreadHandles = OutState.ThreadHandles;
-                MergeThreadHandlesInto(NewState.ThreadHandles, Existing.ThreadHandles);
-                NewState.JoinedThreads = IntersectJoinedThreads(OutState.JoinedThreads, Existing.JoinedThreads);
-            }
-
-            if (StateAtEntry.find(SuccBlock) == StateAtEntry.end() ||
-                NewState != StateAtEntry[SuccBlock]) {
-                StateAtEntry[SuccBlock] = NewState;
-                Worklist.push_back(SuccBlock);
-            }
-        }
-    }
-
-    for (const auto &Entry2 : PairsAtBlock) {
-        Result.insert(Result.end(), Entry2.second.begin(), Entry2.second.end());
-    }
-
-    const CFGBlock *ExitBlock = &Cfg.getExit();
-    auto It = StateAtEntry.find(ExitBlock);
-    if (It != StateAtEntry.end()) {
-        return It->second;
-    }
-    return InitialState;
-}
-
-static LockState AnalyzeFunctionBody(
-    const FunctionDecl *FD,
-    ASTContext &Context,
-    LockState InitialState,
-    std::vector<LockPair> &Result,
-    CallStackMap &CallStack,
-    const std::map<std::string, std::string> &ParamMap,
-    const std::string &ThreadId,
-    std::set<std::string> &CreatedInLoop) {
-
-    if (!FD->hasBody()) return InitialState;
-
-    std::unique_ptr<CFG> Cfg = CFG::buildCFG(
-        FD, FD->getBody(), &Context, CFG::BuildOptions());
-    if (!Cfg) return InitialState;
-
-    bool HadPrevious = CallStack.count(FD) > 0;
-    CallContext PreviousValue;
-    if (HadPrevious) {
-        PreviousValue = CallStack[FD];
-    }
-
-    CallStack[FD] = CallContext{InitialState, ParamMap};
-    LockState OutState = ComputeLockPairs(
-        *Cfg, InitialState, Result, Context, CallStack, ParamMap, ThreadId, CreatedInLoop);
-
-    if (HadPrevious) {
-        CallStack[FD] = PreviousValue;
-    } else {
-        CallStack.erase(FD);
-    }
-
-    return OutState;
-}
+private:
+    std::vector<LockPair> &Result;
+    std::vector<LockPair> BlockBuffer;
+    std::map<const CFGBlock *, std::vector<LockPair>> PairsAtBlock;
+    std::vector<std::pair<std::vector<LockPair>,
+                           std::map<const CFGBlock *, std::vector<LockPair>>>> SavedFrames;
+};
 
 std::vector<LockPair> FindLockOrderPairs(FunctionDecl *FD, ASTContext &Context,
                                           std::set<std::string> &CreatedInLoop) {
     std::vector<LockPair> Result;
+    DeadlockVisitor Visitor(Result);
+
     CallStackMap CallStack;
     LockState InitialState;
     std::map<std::string, std::string> EmptyParamMap;
 
     std::string ThreadId = FD->getNameAsString();
 
-    AnalyzeFunctionBody(FD, Context, InitialState, Result, CallStack, EmptyParamMap, ThreadId, CreatedInLoop);
+    WalkFunction(FD, Context, InitialState, Visitor, CallStack, EmptyParamMap, ThreadId, CreatedInLoop);
 
     return Result;
 }

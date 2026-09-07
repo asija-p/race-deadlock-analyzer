@@ -33,6 +33,16 @@ static std::string ExtractVarName(const Expr *Arg) {
     if (auto *Member = dyn_cast<MemberExpr>(Arg)) {
         std::string BaseName = "?";
         const Expr *Base = Member->getBase()->IgnoreParenImpCasts();
+        // Normalizacija: (*p).field ima Base = UnaryOperator(Deref, p), dok
+        // p->field ima Base = p direktno (isti semanticki objekat - polje
+        // strukture na koju p pokazuje). Bez ovoga, (*p).field vraca razbijen
+        // naziv "?.field" jer IgnoreParenImpCasts ne skida UnaryOperator, pa
+        // DeclRefExpr ispod nikad nije pronadjen.
+        if (auto *DerefOp = dyn_cast<UnaryOperator>(Base)) {
+            if (DerefOp->getOpcode() == UO_Deref) {
+                Base = DerefOp->getSubExpr()->IgnoreParenImpCasts();
+            }
+        }
         if (auto *BaseRef = dyn_cast<DeclRefExpr>(Base)) {
             BaseName = BaseRef->getDecl()->getNameAsString();
         }

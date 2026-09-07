@@ -97,8 +97,8 @@ int main(int argc, char** argv) {
         {"tests/deadlock/rwlock_write_deadlock.c", true, {{"rw1","rw2"}, {"rw2","rw1"}}},
         {"tests/safe/rwlock_readers_safe.c", false, {}},
         {"tests/deadlock/rwlock_shared_must_not_protect_deadlock.c", true, {{"m1","m2"}, {"m2","m1"}}},
+        {"tests/deadlock/deref_dot_normalization_deadlock.c", true, {{"p.lock1","p.lock2"}, {"p.lock2","p.lock1"}}},   
     };
-
     std::string Filter;
     if (argc >= 2) {
         Filter = argv[1];

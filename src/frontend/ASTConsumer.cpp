@@ -48,6 +48,13 @@ void DumpASTConsumer::HandleTranslationUnit(ASTContext &Context) {
             std::cout << L;
             first = false;
         }
+        std::cout << "}  | ThreadId=" << P.ThreadId << "  | JoinedThreads={";
+        bool firstJ = true;
+        for (const auto &J : P.JoinedThreads) {
+            if (!firstJ) std::cout << ",";
+            std::cout << J;
+            firstJ = false;
+        }
         std::cout << "}\n";
     }
     }

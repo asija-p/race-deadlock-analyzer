@@ -100,6 +100,7 @@ int main(int argc, char** argv) {
         {"tests/deadlock/deref_dot_normalization_deadlock.c", true, {{"p.lock1","p.lock2"}, {"p.lock2","p.lock1"}}},   
         {"tests/safe/join_removes_false_deadlock_safe.c", false, {}},
         {"tests/deadlock/create_without_join_deadlock.c", true, {{"m1","m2"}, {"m2","m1"}}},
+        {"tests/safe/join_before_branch_still_safe.c", false, {}},
     };
     std::string Filter;
     if (argc >= 2) {

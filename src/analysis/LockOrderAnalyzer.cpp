@@ -63,8 +63,8 @@ static std::string ResolveName(const std::string &Name,
 struct LockState {
     std::map<std::string, LockKind> May;
     std::map<std::string, LockKind> Must;
-    std::map<std::string, std::string> ThreadHandles;  // NOVO - "tid" ime -> ThreadId
-    std::set<std::string> JoinedThreads;                // NOVO - koje niti su SIGURNO gotove
+    std::map<std::string, std::string> ThreadHandles;  // "tid" ime -> ThreadId
+    std::set<std::string> JoinedThreads;                // koje niti su SIGURNO gotove
 
     bool operator==(const LockState &Other) const {
         return May == Other.May && Must == Other.Must &&
@@ -106,6 +106,25 @@ static std::map<std::string, LockKind> IntersectMust(
         }
     }
     return Result;
+}
+
+// Presek JoinedThreads dve grane (Must-stil, analogno IntersectMust). Nit je
+// "sigurno gotova" nakon spajanja grana samo ako je gotova na OBE grane.
+static std::set<std::string> IntersectJoinedThreads(
+    const std::set<std::string> &A, const std::set<std::string> &B) {
+    std::set<std::string> Result;
+    std::set_intersection(A.begin(), A.end(), B.begin(), B.end(),
+                           std::inserter(Result, Result.begin()));
+    return Result;
+}
+
+// Unija ThreadHandles (ime -> ThreadId) - cisto knjigovodstvo, nije kriticno
+// za soundness (dokaz non-concurrency se oslanja na JoinedThreads).
+static void MergeThreadHandlesInto(std::map<std::string, std::string> &Target,
+                                    const std::map<std::string, std::string> &Source) {
+    for (const auto &Entry : Source) {
+        Target.insert(Entry);
+    }
 }
 
 struct CallContext {
@@ -178,7 +197,7 @@ static LockState ProcessBlock(
                     P.ContextLocks = KeysOf(State.May);
                     P.MustContextLocks = KeysOf(State.Must);
                     P.MustContextKinds = State.Must;
-                    P.JoinedThreads = State.JoinedThreads;   // NOVO
+                    P.JoinedThreads = State.JoinedThreads;
                     P.ThreadId = ThreadId;
                     Result.push_back(P);
                 }
@@ -193,9 +212,6 @@ static LockState ProcessBlock(
 
         if (FuncName == "pthread_create") {
             if (Call->getNumArgs() >= 3) {
-                // NOVO: racunamo NewThreadId ODMAH, ne samo unutar ShouldEnter,
-                // jer nam treba za ThreadHandles bez obzira da li se telo
-                // niti ponovo analizira.
                 unsigned Line = Context.getSourceManager()
                                     .getSpellingLineNumber(Call->getBeginLoc());
                 std::string NewThreadId = "create_line_" + std::to_string(Line);
@@ -215,9 +231,6 @@ static LockState ProcessBlock(
                         const FunctionDecl *ThreadDef = ThreadFD->getDefinition();
                         if (ThreadDef && ThreadDef->hasBody()) {
                             LockState EmptyState;
-                            // NOVO: brave ostaju prazne, ALI JoinedThreads i
-                            // ThreadHandles se NASLEDJUJU od roditelja u ovom
-                            // trenutku - resava slucaj create t1, join t1, create t2.
                             EmptyState.ThreadHandles = State.ThreadHandles;
                             EmptyState.JoinedThreads = State.JoinedThreads;
 
@@ -318,10 +331,9 @@ static LockState ComputeLockPairs(
                 NewState.May = OutState.May;
                 MergeMayInto(NewState.May, Existing.May);
                 NewState.Must = IntersectMust(OutState.Must, Existing.Must);
-                // NAPOMENA: ThreadHandles/JoinedThreads merge na granama grananja
-                // (if/loop) NIJE ovde odradjen - poznato ogranicenje za sledeci
-                // mikro-korak. Za pravolinijski kod (bez grananja izmedju
-                // create/join) ova grana se i ne izvrsava.
+                NewState.ThreadHandles = OutState.ThreadHandles;
+                MergeThreadHandlesInto(NewState.ThreadHandles, Existing.ThreadHandles);
+                NewState.JoinedThreads = IntersectJoinedThreads(OutState.JoinedThreads, Existing.JoinedThreads);
             }
 
             if (StateAtEntry.find(SuccBlock) == StateAtEntry.end() ||

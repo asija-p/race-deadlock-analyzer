@@ -304,6 +304,12 @@ static LockState ComputeLockPairs(
     std::map<const CFGBlock*, LockState> StateAtEntry;
     std::map<const CFGBlock*, bool> Visited;
     std::vector<const CFGBlock*> Worklist;
+    // NOVO: "kutija" parova PO BLOKU - svaki prolaz kroz ProcessBlock za
+    // dati blok PREPISUJE staru vrednost, umesto da se dodaje pored nje.
+    // Ovo sprecava da parovi iz privremenih, nekonvergiranih fixpoint
+    // prolaza (npr. blok posle petlje, obradjen vise puta dok se stanje
+    // ne stabilizuje) ostanu trajno u finalnom Result-u.
+    std::map<const CFGBlock*, std::vector<LockPair>> PairsAtBlock;
 
     const CFGBlock *Entry = &Cfg.getEntry();
     StateAtEntry[Entry] = InitialState;
@@ -315,8 +321,10 @@ static LockState ComputeLockPairs(
         Worklist.pop_back();
 
         LockState InState = StateAtEntry[Block];
+        std::vector<LockPair> BlockPairs;
         LockState OutState = ProcessBlock(
-            Block, InState, Result, Context, CallStack, ParamMap, ThreadId);
+            Block, InState, BlockPairs, Context, CallStack, ParamMap, ThreadId);
+        PairsAtBlock[Block] = BlockPairs;
 
         for (const CFGBlock::AdjacentBlock &Succ : Block->succs()) {
             if (!Succ.isReachable()) continue;
@@ -342,6 +350,13 @@ static LockState ComputeLockPairs(
                 Worklist.push_back(SuccBlock);
             }
         }
+    }
+
+    // NOVO: tek SAD, kad je fixpoint dostignut, pokupi parove iz svih
+    // "kutija" - svaka kutija sadrzi samo parove iz POSLEDNJEG (finalnog)
+    // prolaza kroz taj blok.
+    for (const auto &Entry2 : PairsAtBlock) {
+        Result.insert(Result.end(), Entry2.second.begin(), Entry2.second.end());
     }
 
     const CFGBlock *ExitBlock = &Cfg.getExit();

@@ -8,47 +8,12 @@
 
 bool QuietMode = false;
 
-void DumpASTConsumer::HandleTranslationUnit(ASTContext &Context) {
-    SourceManager &SM = Context.getSourceManager();
-    TranslationUnitDecl *TU = Context.getTranslationUnitDecl();
-
-    CallFinderVisitor Visitor(SM);
-    std::vector<LockPair> AllPairs;
-    std::set<std::string> CreatedInLoop;
-    std::vector<MemoryAccess> AllAccesses;
-
-    for (Decl *D : TU->decls()) {
-        if (!SM.isInMainFile(D->getLocation())) {
-            continue;
-        }
-
-        if (auto *FD = dyn_cast<FunctionDecl>(D)) {
-            if (!FD->hasBody()) {
-                continue;
-            }
-
-            if (!QuietMode) {
-                std::cout << "\n--- Funkcija: " << FD->getNameAsString() << " ---\n";
-                Visitor.TraverseDecl(FD);
-                PrintCFGForFunction(FD, Context);
-            }
-
-            if (FD->getNameAsString() == "main") {
-                std::vector<LockPair> Pairs = FindLockOrderPairs(FD, Context, CreatedInLoop);
-                for (const LockPair &P : Pairs) {
-                    AllPairs.push_back(P);
-                }
-
-                std::set<std::string> RaceCreatedInLoop;
-                std::vector<MemoryAccess> Accesses = FindMemoryAccesses(FD, Context, RaceCreatedInLoop);
-                for (const MemoryAccess &A : Accesses) {
-                    AllAccesses.push_back(A);
-                }
-            }
-        }
-    }
-
-    if (!QuietMode) {
+// Ispisuje pun, citljiv izvestaj (CFG, lock-order parove, MemoryAccess
+// zapise, i finalne rezultate deadlock/race analize) - za rucno pregledanje.
+static void PrintFullReport(const std::vector<LockPair> &AllPairs,
+                             const std::set<std::string> &CreatedInLoop,
+                             const std::vector<MemoryAccess> &AllAccesses,
+                             const std::vector<std::vector<LockPair>> &Cycles) {
     std::cout << "\n=== SVI parovi zakljucavanja (iz svih funkcija) ===\n";
     for (const LockPair &P : AllPairs) {
         std::cout << P.From << " -> " << P.To << "  | Must={";
@@ -112,42 +77,6 @@ void DumpASTConsumer::HandleTranslationUnit(ASTContext &Context) {
                        << "[" << Report.B.ThreadId << " Linija " << Report.B.Line << "]\n";
         }
     }
-    }
-
-    auto Cycles = FindCycles(AllPairs);
-
-    if (QuietMode) {
-        auto Races = FindRaces(AllAccesses);
-        if (!Races.empty()) {
-            std::cout << "RACE\n";
-            for (const auto &Report : Races) {
-                std::cout << Report.A.VarName << "|"
-                           << Report.A.Line << "|"
-                           << Report.A.ThreadId << "|"
-                           << (Report.Severity == RaceSeverity::MustRace ? "MUST" : "MAY") << "\n";
-                std::cout << Report.B.VarName << "|"
-                           << Report.B.Line << "|"
-                           << Report.B.ThreadId << "|"
-                           << (Report.Severity == RaceSeverity::MustRace ? "MUST" : "MAY") << "\n";
-            }
-        } else {
-            std::cout << "NO_RACE\n";
-        }
-
-        if (!Cycles.empty()) {
-            std::cout << "DEADLOCK\n";
-            for (const auto &Cycle : Cycles) {
-                for (size_t i = 0; i < Cycle.size(); i++) {
-                    if (i > 0) std::cout << ",";
-                    std::cout << Cycle[i].From << "->" << Cycle[i].To;
-                }
-                std::cout << "\n";
-            }
-        } else {
-            std::cout << "SAFE\n";
-        }
-        return;
-    }   
 
     if (!Cycles.empty()) {
         std::cout << "UPOZORENJE: Moguci deadlock!\n";
@@ -172,6 +101,90 @@ void DumpASTConsumer::HandleTranslationUnit(ASTContext &Context) {
         }
     } else {
         std::cout << "Nije pronadjen deadlock rizik.\n";
+    }
+}
+
+// Ispisuje mašinski citljiv, kompaktan format - za automatsko testiranje
+// (test_runner.cpp parsira ovaj izlaz).
+static void PrintQuietReport(const std::vector<MemoryAccess> &AllAccesses,
+                              const std::vector<std::vector<LockPair>> &Cycles) {
+    auto Races = FindRaces(AllAccesses);
+    if (!Races.empty()) {
+        std::cout << "RACE\n";
+        for (const auto &Report : Races) {
+            std::cout << Report.A.VarName << "|"
+                       << Report.A.Line << "|"
+                       << Report.A.ThreadId << "|"
+                       << (Report.Severity == RaceSeverity::MustRace ? "MUST" : "MAY") << "\n";
+            std::cout << Report.B.VarName << "|"
+                       << Report.B.Line << "|"
+                       << Report.B.ThreadId << "|"
+                       << (Report.Severity == RaceSeverity::MustRace ? "MUST" : "MAY") << "\n";
+        }
+    } else {
+        std::cout << "NO_RACE\n";
+    }
+
+    if (!Cycles.empty()) {
+        std::cout << "DEADLOCK\n";
+        for (const auto &Cycle : Cycles) {
+            for (size_t i = 0; i < Cycle.size(); i++) {
+                if (i > 0) std::cout << ",";
+                std::cout << Cycle[i].From << "->" << Cycle[i].To;
+            }
+            std::cout << "\n";
+        }
+    } else {
+        std::cout << "SAFE\n";
+    }
+}
+
+void DumpASTConsumer::HandleTranslationUnit(ASTContext &Context) {
+    SourceManager &SM = Context.getSourceManager();
+    TranslationUnitDecl *TU = Context.getTranslationUnitDecl();
+
+    CallFinderVisitor Visitor(SM);
+    std::vector<LockPair> AllPairs;
+    std::set<std::string> CreatedInLoop;
+    std::vector<MemoryAccess> AllAccesses;
+
+    for (Decl *D : TU->decls()) {
+        if (!SM.isInMainFile(D->getLocation())) {
+            continue;
+        }
+
+        if (auto *FD = dyn_cast<FunctionDecl>(D)) {
+            if (!FD->hasBody()) {
+                continue;
+            }
+
+            if (!QuietMode) {
+                std::cout << "\n--- Funkcija: " << FD->getNameAsString() << " ---\n";
+                Visitor.TraverseDecl(FD);
+                PrintCFGForFunction(FD, Context);
+            }
+
+            if (FD->getNameAsString() == "main") {
+                std::vector<LockPair> Pairs = FindLockOrderPairs(FD, Context, CreatedInLoop);
+                for (const LockPair &P : Pairs) {
+                    AllPairs.push_back(P);
+                }
+
+                std::set<std::string> RaceCreatedInLoop;
+                std::vector<MemoryAccess> Accesses = FindMemoryAccesses(FD, Context, RaceCreatedInLoop);
+                for (const MemoryAccess &A : Accesses) {
+                    AllAccesses.push_back(A);
+                }
+            }
+        }
+    }
+
+    auto Cycles = FindCycles(AllPairs);
+
+    if (QuietMode) {
+        PrintQuietReport(AllAccesses, Cycles);
+    } else {
+        PrintFullReport(AllPairs, CreatedInLoop, AllAccesses, Cycles);
     }
 }
 

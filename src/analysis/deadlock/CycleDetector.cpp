@@ -52,6 +52,11 @@ static bool AllSameThread(const std::vector<LockPair> &Cycle) {
             return false;
         }
     }
+    // Sve ivice dele istu nit - ali ako je ta nit CreatedInLoop, ne
+    // smemo tvrditi da je "sigurno ista instanca".
+    if (Cycle[0].CreatedInLoop) {
+        return false;
+    }
     return true;
 }
 

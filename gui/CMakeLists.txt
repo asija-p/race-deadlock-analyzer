@@ -7,10 +7,13 @@ add_executable(analyzer_gui
     MainWindow.cpp
     AnalyzerRunner.cpp
     GraphView.cpp
+    LineNumberEditor.cpp
+    resources.qrc
 )
 
 target_link_libraries(analyzer_gui PRIVATE Qt6::Widgets)
 
 set_target_properties(analyzer_gui PROPERTIES
     AUTOMOC ON
+    AUTORCC ON
 )

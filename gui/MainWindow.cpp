@@ -1,5 +1,6 @@
 #include "MainWindow.h"
 #include "GraphView.h"
+#include "LineNumberEditor.h"
 #include <QPushButton>
 #include <QTextEdit>
 #include <QPlainTextEdit>
@@ -27,7 +28,7 @@ MainWindow::MainWindow() {
     ButtonLayout->addWidget(AnalyzeButton);
     ButtonLayout->addStretch();
 
-    CodeEditor = new QPlainTextEdit(Central);
+    CodeEditor = new LineNumberEditor(Central);
     CodeEditor->setPlaceholderText("Otkucaj C kod ovde, ili klikni 'Ucitaj fajl'...");
     QFont MonoFont("Monospace");
     MonoFont.setStyleHint(QFont::TypeWriter);

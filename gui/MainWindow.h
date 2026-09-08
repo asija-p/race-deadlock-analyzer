@@ -3,8 +3,8 @@
 
 #include <QMainWindow>
 #include "AnalyzerRunner.h"
+#include "LineNumberEditor.h"
 
-class QPlainTextEdit;
 class QTextEdit;
 class QLabel;
 class GraphView;
@@ -14,7 +14,7 @@ public:
     MainWindow();
 
 private:
-    QPlainTextEdit *CodeEditor;
+    LineNumberEditor *CodeEditor;
     QLabel *ResultLabel;
     QTextEdit *ResultText;
     GraphView *Graph;

@@ -1,4 +1,5 @@
 #include "MainWindow.h"
+#include "GraphView.h"
 #include <QPushButton>
 #include <QTextEdit>
 #include <QPlainTextEdit>
@@ -14,7 +15,7 @@
 
 MainWindow::MainWindow() {
     setWindowTitle("Race/Deadlock Analyzer");
-    resize(900, 650);
+    resize(1000, 800);
 
     QWidget *Central = new QWidget(this);
     QVBoxLayout *MainLayout = new QVBoxLayout(Central);
@@ -35,16 +36,23 @@ MainWindow::MainWindow() {
     ResultLabel = new QLabel("Nema jos rezultata.", Central);
     ResultText = new QTextEdit(Central);
     ResultText->setReadOnly(true);
+    ResultText->setMaximumHeight(150);  // tekst ostaje kompaktan
+
+    Graph = new GraphView(Central);
+
+    // Gornji splitter: editor levo, tekst rezultata + graf desno.
+    QWidget *RightSide = new QWidget();
+    QVBoxLayout *RightLayout = new QVBoxLayout(RightSide);
+    RightLayout->setContentsMargins(0, 0, 0, 0);
+    RightLayout->addWidget(ResultLabel);
+    RightLayout->addWidget(ResultText);
+    RightLayout->addWidget(Graph, /*stretch=*/1);  // graf uzima vecinu prostora
 
     QSplitter *Splitter = new QSplitter(Qt::Horizontal, Central);
     Splitter->addWidget(CodeEditor);
-
-    QWidget *ResultWidget = new QWidget();
-    QVBoxLayout *ResultLayout = new QVBoxLayout(ResultWidget);
-    ResultLayout->addWidget(ResultLabel);
-    ResultLayout->addWidget(ResultText);
-    ResultLayout->setContentsMargins(0, 0, 0, 0);
-    Splitter->addWidget(ResultWidget);
+    Splitter->addWidget(RightSide);
+    Splitter->setStretchFactor(0, 1);
+    Splitter->setStretchFactor(1, 2);  // desna strana (rezultat+graf) sira
 
     MainLayout->addLayout(ButtonLayout);
     MainLayout->addWidget(Splitter);
@@ -82,6 +90,7 @@ void MainWindow::DisplayResult(const AnalysisResult &Result) {
         ResultLabel->setText(Result.ErrorMessage);
         ResultText->setPlainText("Sirovi izlaz analizatora:\n" + Result.RawOutput +
                                   "\n\nStderr:\n" + Result.RawError);
+        Graph->SetGraph({}, {});
         return;
     }
 
@@ -127,4 +136,22 @@ void MainWindow::DisplayResult(const AnalysisResult &Result) {
     }
 
     ResultText->setPlainText(Details);
+
+    // Pripremi podatke za GraphView: sve ivice, i skup "from->to" stringova
+    // koji su deo bilo kog prijavljenog ciklusa (za crvenu boju).
+    QVector<QPair<QString, QString>> Edges;
+    for (const QJsonValue &Val : Result.AllPairs) {
+        QJsonObject Pair = Val.toObject();
+        Edges.append({Pair["from"].toString(), Pair["to"].toString()});
+    }
+
+    QSet<QString> CycleEdges;
+    for (const QJsonValue &Val : Result.Deadlocks) {
+        QJsonArray Cycle = Val.toObject()["cycle"].toArray();
+        for (const QJsonValue &Edge : Cycle) {
+            CycleEdges.insert(Edge.toString());
+        }
+    }
+
+    Graph->SetGraph(Edges, CycleEdges);
 }

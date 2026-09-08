@@ -52,6 +52,7 @@ AnalysisResult AnalyzerRunner::Run(const QString &code) {
     }
 
     QJsonObject Root = Doc.object();
+    Result.AllPairs = Root["all_pairs"].toArray(); 
     Result.Deadlocks = Root["deadlocks"].toArray();
     Result.Races = Root["races"].toArray();
     Result.Success = true;

@@ -13,6 +13,7 @@ struct AnalysisResult {
     QString ErrorMessage;
     QString RawOutput;
     QString RawError;
+    QJsonArray AllPairs;    // NOVO
     QJsonArray Deadlocks;
     QJsonArray Races;
 };

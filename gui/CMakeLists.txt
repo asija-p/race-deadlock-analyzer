@@ -6,6 +6,7 @@ add_executable(analyzer_gui
     main.cpp
     MainWindow.cpp
     AnalyzerRunner.cpp
+    GraphView.cpp
 )
 
 target_link_libraries(analyzer_gui PRIVATE Qt6::Widgets)

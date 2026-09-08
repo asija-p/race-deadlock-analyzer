@@ -7,6 +7,7 @@
 class QPlainTextEdit;
 class QTextEdit;
 class QLabel;
+class GraphView;
 
 class MainWindow : public QMainWindow {
 public:
@@ -16,6 +17,7 @@ private:
     QPlainTextEdit *CodeEditor;
     QLabel *ResultLabel;
     QTextEdit *ResultText;
+    GraphView *Graph;
     AnalyzerRunner Runner;
 
     void OnOpenFile();
@@ -24,4 +26,3 @@ private:
 };
 
 #endif
-

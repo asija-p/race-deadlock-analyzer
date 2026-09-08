@@ -142,11 +142,21 @@ static void PrintQuietReport(const std::vector<MemoryAccess> &AllAccesses,
 
 // Ispisuje rezultate u JSON formatu - za GUI (Qt aplikaciju) da lako parsira
 // preko QJsonDocument, umesto da parsira nas tekstualni --quiet format.
-static void PrintJsonReport(const std::vector<MemoryAccess> &AllAccesses,
+static void PrintJsonReport(const std::vector<LockPair> &AllPairs,
+                             const std::vector<MemoryAccess> &AllAccesses,
                              const std::vector<std::vector<LockPair>> &Cycles) {
     auto Races = FindRaces(AllAccesses);
 
     std::cout << "{\n";
+
+    // NOVO - svi parovi zakljucavanja, za crtanje CELOG grafa (ne samo ciklusa)
+    std::cout << "  \"all_pairs\": [\n";
+    for (size_t i = 0; i < AllPairs.size(); i++) {
+        std::cout << "    {\"from\": \"" << AllPairs[i].From << "\", \"to\": \"" << AllPairs[i].To << "\"}";
+        if (i + 1 < AllPairs.size()) std::cout << ",";
+        std::cout << "\n";
+    }
+    std::cout << "  ],\n";
 
     std::cout << "  \"deadlocks\": [\n";
     for (size_t i = 0; i < Cycles.size(); i++) {
@@ -223,7 +233,7 @@ void DumpASTConsumer::HandleTranslationUnit(ASTContext &Context) {
     auto Cycles = FindCycles(AllPairs);
     
     if (JsonMode) {
-        PrintJsonReport(AllAccesses, Cycles);
+        PrintJsonReport(AllPairs, AllAccesses, Cycles);
     } else if (QuietMode) {
         PrintQuietReport(AllAccesses, Cycles);
     } else {

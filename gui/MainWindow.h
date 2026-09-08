@@ -8,6 +8,7 @@
 class QTextEdit;
 class QLabel;
 class GraphView;
+class QTableWidget;
 
 class MainWindow : public QMainWindow {
 public:
@@ -18,11 +19,14 @@ private:
     QLabel *ResultLabel;
     QTextEdit *ResultText;
     GraphView *Graph;
+    QTableWidget *RaceTable;
     AnalyzerRunner Runner;
 
     void OnOpenFile();
     void OnAnalyze();
     void DisplayResult(const AnalysisResult &Result);
+    void OnRaceRowClicked(int row, int column);
+    void HighlightLines(int line1, int line2);
 };
 
 #endif

@@ -7,6 +7,7 @@
 #include "../analysis/race/RaceDetector.h"
 
 bool QuietMode = false;
+bool JsonMode = false;
 
 // Ispisuje pun, citljiv izvestaj (CFG, lock-order parove, MemoryAccess
 // zapise, i finalne rezultate deadlock/race analize) - za rucno pregledanje.
@@ -139,6 +140,45 @@ static void PrintQuietReport(const std::vector<MemoryAccess> &AllAccesses,
     }
 }
 
+// Ispisuje rezultate u JSON formatu - za GUI (Qt aplikaciju) da lako parsira
+// preko QJsonDocument, umesto da parsira nas tekstualni --quiet format.
+static void PrintJsonReport(const std::vector<MemoryAccess> &AllAccesses,
+                             const std::vector<std::vector<LockPair>> &Cycles) {
+    auto Races = FindRaces(AllAccesses);
+
+    std::cout << "{\n";
+
+    std::cout << "  \"deadlocks\": [\n";
+    for (size_t i = 0; i < Cycles.size(); i++) {
+        std::cout << "    {\"cycle\": [";
+        const auto &Cycle = Cycles[i];
+        for (size_t j = 0; j < Cycle.size(); j++) {
+            std::cout << "\"" << Cycle[j].From << "->" << Cycle[j].To << "\"";
+            if (j + 1 < Cycle.size()) std::cout << ", ";
+        }
+        std::cout << "]}";
+        if (i + 1 < Cycles.size()) std::cout << ",";
+        std::cout << "\n";
+    }
+    std::cout << "  ],\n";
+
+    std::cout << "  \"races\": [\n";
+    for (size_t i = 0; i < Races.size(); i++) {
+        const auto &Report = Races[i];
+        const char *SeverityStr = (Report.Severity == RaceSeverity::MustRace) ? "MUST" : "MAY";
+        std::cout << "    {\"var\": \"" << Report.A.VarName << "\", \"severity\": \"" << SeverityStr << "\", "
+                   << "\"pair\": ["
+                   << "{\"line\": " << Report.A.Line << ", \"thread\": \"" << Report.A.ThreadId << "\"}, "
+                   << "{\"line\": " << Report.B.Line << ", \"thread\": \"" << Report.B.ThreadId << "\"}"
+                   << "]}";
+        if (i + 1 < Races.size()) std::cout << ",";
+        std::cout << "\n";
+    }
+    std::cout << "  ]\n";
+
+    std::cout << "}\n";
+}
+
 void DumpASTConsumer::HandleTranslationUnit(ASTContext &Context) {
     SourceManager &SM = Context.getSourceManager();
     TranslationUnitDecl *TU = Context.getTranslationUnitDecl();
@@ -158,7 +198,7 @@ void DumpASTConsumer::HandleTranslationUnit(ASTContext &Context) {
                 continue;
             }
 
-            if (!QuietMode) {
+            if (!QuietMode && !JsonMode) {
                 std::cout << "\n--- Funkcija: " << FD->getNameAsString() << " ---\n";
                 Visitor.TraverseDecl(FD);
                 PrintCFGForFunction(FD, Context);
@@ -179,16 +219,21 @@ void DumpASTConsumer::HandleTranslationUnit(ASTContext &Context) {
         }
     }
 
+    
     auto Cycles = FindCycles(AllPairs);
-
-    if (QuietMode) {
+    
+    if (JsonMode) {
+        PrintJsonReport(AllAccesses, Cycles);
+    } else if (QuietMode) {
         PrintQuietReport(AllAccesses, Cycles);
     } else {
         PrintFullReport(AllPairs, CreatedInLoop, AllAccesses, Cycles);
     }
+
 }
 
 std::unique_ptr<ASTConsumer> DumpASTAction::CreateASTConsumer(
     CompilerInstance &CI, StringRef file) {
     return std::make_unique<DumpASTConsumer>();
 }
+

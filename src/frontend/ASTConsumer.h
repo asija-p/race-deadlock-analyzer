@@ -1,6 +1,7 @@
 // Globalni flag - kada je true, HandleTranslationUnit ne ispisuje
 // CFG dump ni "lep" tekst, samo kratak rezultat za automatsko testiranje.
 extern bool QuietMode;
+extern bool JsonMode;
 
 #ifndef ASTCONSUMER_H
 #define ASTCONSUMER_H

@@ -39,3 +39,5 @@ target_link_libraries(analyzer PRIVATE clang-cpp LLVM)
 add_executable(test_runner
     tests/test_runner.cpp
 )
+
+add_subdirectory(gui)

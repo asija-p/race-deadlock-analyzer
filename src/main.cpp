@@ -9,7 +9,7 @@ using namespace clang::tooling;
 
 int main(int argc, char** argv) {
     if (argc < 2) {
-        std::cerr << "Upotreba: " << argv[0] << " [--quiet] <putanja_do_c_fajla>\n";
+        std::cerr << "Upotreba: " << argv[0] << " [--quiet] [--json] <putanja_do_c_fajla>\n";
         return 1;
     }
 
@@ -18,6 +18,8 @@ int main(int argc, char** argv) {
         std::string arg = argv[i];
         if (arg == "--quiet") {
             QuietMode = true;
+        } else if (arg == "--json") {
+            JsonMode = true;
         } else {
             filePath = arg;
         }

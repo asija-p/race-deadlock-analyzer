@@ -2,7 +2,7 @@
 #define MAINWINDOW_H
 
 #include <QMainWindow>
-#include "AnalyzerRunner.h"
+#include "../core/AnalyzerRunner.h"
 #include "LineNumberEditor.h"
 
 class QTextEdit;

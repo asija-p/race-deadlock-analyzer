@@ -1,7 +1,7 @@
 #include <QApplication>
 #include <QFile>
 #include <QTextStream>
-#include "MainWindow.h"
+#include "widgets/MainWindow.h"
 
 int main(int argc, char *argv[]) {
     QApplication app(argc, argv);

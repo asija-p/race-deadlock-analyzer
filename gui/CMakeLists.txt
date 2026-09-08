@@ -4,11 +4,11 @@ qt_standard_project_setup()
 
 add_executable(analyzer_gui
     main.cpp
-    MainWindow.cpp
-    AnalyzerRunner.cpp
-    GraphView.cpp
-    LineNumberEditor.cpp
-    resources.qrc
+    widgets/MainWindow.cpp
+    widgets/GraphView.cpp
+    widgets/LineNumberEditor.cpp
+    core/AnalyzerRunner.cpp
+    resources/resources.qrc
 )
 
 target_link_libraries(analyzer_gui PRIVATE Qt6::Widgets)

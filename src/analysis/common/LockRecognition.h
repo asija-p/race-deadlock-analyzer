@@ -17,9 +17,6 @@ enum class LockCallKind {
 
 LockCallKind ClassifyLockCall(const std::string &FuncName);
 
-// Azurira State.May/State.Must u skladu sa Kind (lock dodaje MutexName sa
-// odgovarajucim LockKind-om, unlock ga uklanja). Poziva se POSLE eventualnog
-// generisanja LockPair-a (koji mora da vidi STARO stanje, pre ove izmene).
 void ApplyLockCallToState(LockCallKind Kind, const std::string &MutexName, LockState &State);
 
 #endif

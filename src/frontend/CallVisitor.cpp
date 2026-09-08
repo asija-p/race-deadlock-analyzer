@@ -34,9 +34,7 @@ bool CallFinderVisitor::VisitCallExpr(CallExpr *Call) {
         } else if (auto *Member = dyn_cast<MemberExpr>(Arg)) {
             std::string BaseName = "?";
             const Expr *Base = Member->getBase()->IgnoreParenImpCasts();
-            // Normalizacija: (*p).field ima Base = UnaryOperator(Deref, p), dok
-            // p->field ima Base = p direktno (isti semanticki objekat). Bez ovoga,
-            // (*p).field vraca razbijen naziv "?.field" u debug ispisu.
+
             if (auto *DerefOp = dyn_cast<UnaryOperator>(Base)) {
                 if (DerefOp->getOpcode() == UO_Deref) {
                     Base = DerefOp->getSubExpr()->IgnoreParenImpCasts();

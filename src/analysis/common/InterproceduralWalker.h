@@ -30,34 +30,26 @@ struct CallContext {
 
 using CallStackMap = std::map<const FunctionDecl *, CallContext>;
 
-// Implementira ga svaka konkretna analiza (deadlock, race, ...).
+// InterproceduralWalker sam radi:
+//   - obilazak CFG-a sa spajanjem stanja na granama,
+//   - ulazak u pozvane funkcije (i pamti sta je vec obradjeno),
+//   - prati pthread_create/pthread_join (ko je posle koga).
 //
-// InterproceduralWalker sam resava:
-//   - CFG worklist/fixpoint obilazak sa merge-om stanja na spoju grana,
-//   - interproceduralnu rekurziju sa call-context memoizacijom,
-//   - pthread_create/pthread_join happens-before knjigovodstvo.
-//
-// Visitor NE zna nista o tome - reaguje samo na ono sto je specificno za
-// njegov domen (npr. lock/unlock pozivi kod deadlocka, citanja/pisanja
-// deljenih promenljivih kod race analize) i sam vodi racuna o svom
-// rezultatu (Walker o tipu rezultata nista ne zna - deadlock generise
-// std::vector<LockPair>, race bi generisao npr. std::vector<MemoryAccess>).
+// Visitor ne zna nista o tome - samo reaguje na ono sto je NJEMU vazno
+// (npr. lock/unlock pozivi kod deadlocka, citanje/pisanje promenljivih
+// kod race-a) i sam pamti svoj rezultat (Walker ne zna sta ce visitor
+// da vrati - deadlock pravi listu LockPair, race listu MemoryAccess).
 class AnalysisVisitor {
 public:
     virtual ~AnalysisVisitor() = default;
 
-    // Pozvano za SVAKI CallExpr u bloku, PRE nego sto Walker eventualno
-    // uradi genericki interproceduralni ulazak u telo pozvane funkcije.
-    // pthread_create/pthread_join Walker obradjuje sam i NIKAD ih ne
-    // prosledjuje ovde.
+    // Poziva se za SVAKI poziv funkcije u bloku, pre nego sto Walker
+    // eventualno sam udje u tu funkciju. pthread_create/pthread_join
+    // Walker uvek obradjuje sam, nikad ne stizu ovde.
     //
-    // Vratiti true = "ja sam ovo obradio, Walker dalje NISTA ne radi za
-    // ovaj poziv" (npr. lock/unlock - spoljna funkcija bez tela, tako da
-    // generic interproceduralni ulazak ionako ne bi imao efekta, ali je
-    // korektnije eksplicitno reci da je "potroseno").
-    // Vratiti false = pusti Walkeru da, AKO Callee ima definiciju sa telom,
-    // uradi standardni interproceduralni ulazak (mapiranje parametara,
-    // memoizacija, rekurzija).
+    // Vrati true = "ja sam ovo vec obradio, Walker nista vise ne radi"
+    // (npr. lock/unlock pozivi).
+    // Vrati false = pusti Walkeru da sam udje u funkciju (ako ima telo).
     virtual bool OnCallExpr(const CallExpr *Call, const FunctionDecl *Callee,
                              const std::string &FuncName, LockState &State,
                              const CFGBlock *Block,
@@ -66,40 +58,21 @@ public:
                              ASTContext &Context,
                              const std::set<std::string> &CreatedInLoop) = 0;
 
-    // Pozvano za SVAKI Stmt u bloku (ukljucujuci i pozive, PRE OnCallExpr
-    // kuke za njih). Podrazumevano ne radi nista - deadlock analiza ovo ne
-    // koristi. Koristi ga analiza kojoj trebaju i ne-poziv iskazi, npr.
-    // race analiza koja gleda dodele/citanja promenljivih.
+
     virtual void OnStmt(const Stmt *S, LockState &State, const CFGBlock *Block,
                          const std::map<std::string, std::string> &ParamMap,
                          const std::string &ThreadId, ASTContext &Context,
                          const std::set<std::string> &CreatedInLoop) {}
 
-    // Pozvano tacno jednom pre obrade prvog iskaza u bloku, odnosno tacno
-    // jednom posle obrade poslednjeg. Ako fixpoint algoritam ponovo obradi
-    // isti blok (jer mu se ulazno stanje promenilo), ovaj par se opet
-    // pozove - analiza koja generise rezultate PO BLOKU (kao deadlock)
-    // treba u BeginBlock da odbaci rezultate iz prethodne obrade istog
-    // bloka, da fixpoint ponavljanje ne bi ostavilo zastarele/duplirane
-    // zapise u konacnom rezultatu.
     virtual void EnterNestedCall() {}
     virtual void ExitNestedCall() {}
 
     virtual void BeginBlock(const CFGBlock *Block) {}
     virtual void EndBlock(const CFGBlock *Block) {}
 
-    // Pozvano TACNO JEDNOM po svakom WalkFunction pozivu, odmah nakon sto
-    // fixpoint za tu KONKRETNU CFG analizu zavrsi. Analiza koja bafferuje
-    // rezultate PO BLOKU (npr. deadlock) MORA ovde da prebaci svoj bafer u
-    // Result i da ga OCISTI - CFGBlock* adrese vaze samo dok zivi TA
-    // KONKRETNA CFG, pa odlaganje flush-a do kraja cele rekurzivne analize
-    // dovodi do kolizije adresa izmedju razlicitih funkcija.
     virtual void FlushCFG() {}
 };
 
-// Pokrece interproceduralnu, worklist/fixpoint analizu tela funkcije FD,
-// pozivajuci Visitor kukice usput. Vraca LockState na izlazu iz funkcije
-// (na Exit CFG bloku).
 LockState WalkFunction(const FunctionDecl *FD, ASTContext &Context,
                         LockState InitialState, AnalysisVisitor &Visitor,
                         CallStackMap &CallStack,

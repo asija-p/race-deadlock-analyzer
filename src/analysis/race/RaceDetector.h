@@ -15,9 +15,6 @@ struct RaceReport {
     RaceSeverity Severity;
 };
 
-// Vraca sve parove MemoryAccess zapisa koji predstavljaju potencijalni race,
-// klasifikovane po ozbiljnosti (MustRace = sigurno konkurentni i sigurno
-// nezasticeni; MayRace = neizvesno u bar jednoj od te dve dimenzije).
 std::vector<RaceReport> FindRaces(const std::vector<MemoryAccess> &Accesses);
 
 #endif

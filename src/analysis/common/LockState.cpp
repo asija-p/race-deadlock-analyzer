@@ -46,7 +46,13 @@ std::set<std::string> IntersectJoinedThreads(
 void MergeThreadHandlesInto(std::map<std::string, std::string> &Target,
                              const std::map<std::string, std::string> &Source) {
     for (const auto &Entry : Source) {
-        Target.insert(Entry);
+        auto It = Target.find(Entry.first);
+        if (It == Target.end()) {
+            Target[Entry.first] = Entry.second;
+        } else if (It->second != Entry.second) {
+
+            Target.erase(It);
+        }
     }
 }
 

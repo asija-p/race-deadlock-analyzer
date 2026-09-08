@@ -14,12 +14,9 @@ struct TestCase {
     std::set<std::pair<std::string,std::string>> ExpectedEdges;
     bool ExpectRace = false;
     std::set<std::string> ExpectedRaceVars;
-    // Ako je ExpectRace true, ovo je ocekivana ozbiljnost ("MUST" ili "MAY").
-    // Prazan string = ne proveravaj ozbiljnost (za stare testove bez ovog polja).
     std::string ExpectedSeverity = "";
 };
 
-// Pokrece komandu kao subprocess, vraca njen ceo stdout izlaz kao string
 static std::string RunCommand(const std::string &Command) {
     std::array<char, 256> Buffer;
     std::string Result;
@@ -38,14 +35,9 @@ struct ActualResult {
     std::set<std::pair<std::string,std::string>> Edges;
     bool HasRace = false;
     std::set<std::string> RaceVars;
-    // Skup svih ozbiljnosti vidjenih u izlazu (moze imati i "MUST" i "MAY"
-    // ako ima vise race parova razlicite ozbiljnosti).
     std::set<std::string> RaceSeverities;
 };
 
-// Parsira izlaz analyzer-a (--quiet mod):
-// "RACE\nx|6|create_line_12|MUST\nx|13|main|MUST\nDEADLOCK\nm1->m2,m2->m1\n"
-// ili "NO_RACE\nSAFE\n" (i sve kombinacije izmedju).
 static ActualResult ParseAnalyzerOutput(const std::string &Output) {
     ActualResult Res;
 
@@ -57,8 +49,7 @@ static ActualResult ParseAnalyzerOutput(const std::string &Output) {
 
     if (Line == "RACE") {
         Res.HasRace = true;
-        // Cita RACE parove dok ne naidje na DEADLOCK/SAFE liniju (pocetak
-        // sledece sekcije), koju onda mora da "vrati" na obradu ispod.
+
         while (std::getline(Stream, Line)) {
             if (Line == "DEADLOCK" || Line == "SAFE") {
                 break;
@@ -77,15 +68,11 @@ static ActualResult ParseAnalyzerOutput(const std::string &Output) {
                 Res.RaceSeverities.insert(Line.substr(Sep3 + 1));
             }
         }
-        // "Line" sad sadrzi DEADLOCK/SAFE liniju (ili je stream prazan) -
-        // nastavljamo obradu od nje dole, bez ponovnog getline.
     } else if (Line == "NO_RACE") {
         Res.HasRace = false;
         if (!std::getline(Stream, Line)) return Res;
     } else {
         // Neocekivan format (npr. stari analyzer bez race izlaza) -
-        // tretiraj ovu liniju kao pocetak DEADLOCK/SAFE sekcije direktno,
-        // da stariji testovi i dalje rade bez izmene.
     }
 
     // --- DEADLOCK / SAFE sekcija ---
@@ -134,41 +121,62 @@ static void PrintStringSet(const std::set<std::string> &S) {
 
 int main(int argc, char** argv) {
     std::vector<TestCase> Tests = {
-        {"tests/deadlock/interprocedural_deadlock.c", true, {{"m1","m2"}, {"m2","m1"}}},
-        {"tests/safe/common_lock_safe.c", false, {}},
-        {"tests/deadlock/branching_deadlock.c", true, {{"m2","m3"}, {"m3","m2"}}},
-        {"tests/safe/deadcode_safe.c", false, {}},
-        {"tests/deadlock/wrapper_deadlock.c", true, {{"m1","m2"}, {"m2","m1"}}},
-        {"tests/safe/thread_loop_safe.c", false, {}},
-        {"tests/deadlock/thread_loop_deadlock.c", true, {{"m1","m2"}, {"m2","m1"}}},
-        {"tests/deadlock/trylock_deadlock.c", true, {{"m1","m2"}, {"m2","m1"}}},
-        {"tests/deadlock/array_locks_deadlock.c", true, {{"locks[0]","locks[1]"}, {"locks[1]","locks[0]"}}},
-        {"tests/deadlock/struct_locks_deadlock.c", true, {{"res.lock1","res.lock2"}, {"res.lock2","res.lock1"}}},
-        {"tests/deadlock/must_lockset_gap.c", true, {{"m2","m3"}, {"m3","m2"}}},
-        {"tests/deadlock/nested_wrapper_deadlock.c", true, {{"m1","m2"}, {"m2","m1"}}},
-        {"tests/deadlock/switch_deadlock.c", true, {{"m1","m2"}, {"m2","m1"}}},
-        {"tests/deadlock/disconnected_clusters_deadlock.c", true, {{"a1","a2"}, {"a2","a1"}, {"b1","b2"}, {"b2","b1"}}},
-        {"tests/deadlock/conditional_unlock_deadlock.c", true, {{"m1","m2"}, {"m2","m1"}}},
-        {"tests/deadlock/loop_deadlock.c", true, {{"m1","m2"}, {"m2","m1"}}},
-        {"tests/deadlock/three_way_cycle_deadlock.c", true, {{"m1","m2"}, {"m2","m3"}, {"m3","m1"}}},
-        {"tests/safe/sequential_calls_safe.c", false, {}},
-        {"tests/deadlock/rwlock_write_deadlock.c", true, {{"rw1","rw2"}, {"rw2","rw1"}}},
-        {"tests/safe/rwlock_readers_safe.c", false, {}},
+        {"tests/deadlock/recursive_fixed_deadlock.c", true, {{"m1","m2"}, {"m2","m1"}}},
         {"tests/deadlock/rwlock_shared_must_not_protect_deadlock.c", true, {{"m1","m2"}, {"m2","m1"}}},
-        {"tests/deadlock/deref_dot_normalization_deadlock.c", true, {{"p.lock1","p.lock2"}, {"p.lock2","p.lock1"}}},   
-        {"tests/safe/join_removes_false_deadlock_safe.c", false, {}},
-        {"tests/deadlock/create_without_join_deadlock.c", true, {{"m1","m2"}, {"m2","m1"}}},
+        {"tests/deadlock/rwlock_write_deadlock.c", true, {{"rw1","rw2"}, {"rw2","rw1"}}},
         {"tests/deadlock/all_same_thread_deadlock.c", true, {{"m1","m2"}, {"m2","m1"}}},
-        {"tests/safe/join_before_branch_still_safe.c", false, {}},
-        {"tests/deadlock/test_loop_deadlock.c", true, {{"m1","m2"}, {"m2","m1"}}},
+        {"tests/deadlock/array_locks_deadlock.c", true, {{"locks[0]","locks[1]"}, {"locks[1]","locks[0]"}}},
+        {"tests/deadlock/basic_deadlock.c", true, {{"lock1","lock2"}, {"lock2","lock1"}}},
+        {"tests/deadlock/branching_deadlock.c", true, {{"m2","m3"}, {"m3","m2"}}},
+        {"tests/deadlock_safe/single_thread_sequential_no_deadlock.c", false, {}},
+        {"tests/deadlock/conditional_unlock_deadlock.c", true, {{"m1","m2"}, {"m2","m1"}}},
+        {"tests/deadlock/create_without_join_deadlock.c", true, {{"m1","m2"}, {"m2","m1"}}},
+        {"tests/deadlock/deref_dot_normalization_deadlock.c", true, {{"p.lock1","p.lock2"}, {"p.lock2","p.lock1"}}},
+        {"tests/deadlock/disconnected_clusters_deadlock.c", true, {{"a1","a2"}, {"a2","a1"}, {"b1","b2"}, {"b2","b1"}}},
+        {"tests/deadlock/interprocedural_deadlock.c", true, {{"m1","m2"}, {"m2","m1"}}},
+        {"tests/deadlock/loop_deadlock.c", true, {{"m1","m2"}, {"m2","m1"}}},
+        {"tests/deadlock/no_value_analysis_false_branch_deadlock.c", true, {{"m1","m2"}, {"m2","m1"}}},
+        {"tests/deadlock/must_lockset_gap.c", true, {{"m2","m3"}, {"m3","m2"}}},
         {"tests/deadlock/nested_call_same_block_deadlock.c", true, {{"m1","m2"}, {"m2","m1"}}},
+        {"tests/deadlock/nested_wrapper_deadlock.c", true, {{"m1","m2"}, {"m2","m1"}}},
+        {"tests/deadlock/test_loop_deadlock.c", true, {{"m1","m2"}, {"m2","m1"}}},
+        {"tests/deadlock_safe/main_before_create_no_deadlock.c", false, {}},
+        {"tests/deadlock/three_way_cycle_deadlock.c", true, {{"m1","m2"}, {"m2","m3"}, {"m3","m1"}}},
+        {"tests/deadlock/trylock_deadlock.c", true, {{"m1","m2"}, {"m2","m1"}}},
+        {"tests/deadlock/wrapper_deadlock.c", true, {{"m1","m2"}, {"m2","m1"}}},
+        {"tests/deadlock/struct_locks_deadlock.c", true, {{"res.lock1","res.lock2"}, {"res.lock2","res.lock1"}}},
+        {"tests/deadlock/switch_deadlock.c", true, {{"m1","m2"}, {"m2","m1"}}},
+        {"tests/deadlock_safe/main_before_create_in_loop_no_deadlock.c", false, {}},
+        {"tests/deadlock/creation_order_through_interprocedural_call_deadlock.c", true, {{"m1","m2"}, {"m2","m1"}}},
         {"tests/race/basic_race.c", false, {}, true, {"x"}, "MUST"},
         {"tests/race/must_race.c", false, {}, true, {"x"}, "MUST"},
-        {"tests/race/protected_no_race.c", false, {}, false, {}},
         {"tests/race/may_race.c", false, {}, true, {"x"}, "MAY"},
         {"tests/race/loop_race.c", false, {}, true, {"x"}, "MAY"},
-        {"tests/safe/same_thread_safe.c", false, {}},
-        {"tests/safe/partial_protection_safe.c", false, {}},
+        {"tests/race/siblings_threads_race.c", false, {}, true, {"x"}, "MUST"},
+        {"tests/race/loop_join_still_race.c", false, {}, true, {"x"}, "MAY"},
+        {"tests/race_safe/protected_no_race.c", false, {}, false, {}},
+        {"tests/race_safe/main_before_create_race.c", false, {}, false, {}},
+        {"tests/race_safe/join_removes_race.c", false, {}, false, {}},
+        {"tests/race/write_under_rdlock_race.c", false, {}, true, {"x"}, "MUST"},
+        {"tests/race/different_locks_still_race.c", false, {}, true, {"x"}, "MUST"},
+        {"tests/race/compound_assignment_race.c", false, {}, true, {"x"}, "MUST"},
+        {"tests/race/grandchild_thread_race.c", false, {}, true, {"x"}, "MAY"},
+        {"tests/race_safe/shadowed_local_no_race.c", false, {}, false, {}},
+        {"tests/race/write_read_race.c", false, {}, true, {"x"}, "MUST"},
+        {"tests/race/read_in_condition_race.c", false, {}, true, {"x"}, "MUST"},
+        {"tests/race/read_as_call_arg_race.c", false, {}, true, {"x"}, "MUST"},
+        {"tests/race_safe/protected_read_write_no_race.c", false, {}, false, {}},
+        {"tests/race_safe/both_only_read_no_race.c", false, {}, false, {}},
+        {"tests/race/conditional_creation_same_branch_must_race.c", false, {}, true, {"x"}, "MUST"},
+        {"tests/race_safe/different_vars_no_race.c", false, {}, false, {}},
+        {"tests/race_safe/correct_rwlock_usage_no_race.c", false, {}, false, {}},
+        {"tests/race/struct_field_race.c", false, {}, true, {"d.val"}, "MUST"},
+        {"tests/race_safe/shadowed_local_struct_no_race.c", false, {}, false, {}},
+        {"tests/race/conditional_lock_hidden_race.c", false, {}, true, {"x"}, "MAY"},
+        {"tests/deadlock/handle_merge_lost_deadlock.c", true, {{"m1","m2"}, {"m2","m1"}}},
+        {"tests/deadlock_safe/local_mutex_name_collision_no_deadlock.c", false, {}},
+        {"tests/deadlock_safe/rwlock_both_read_no_deadlock.c", false, {}},
+        {"tests/combined/kitchen_sink_combined.c", true, {{"a1","a2"}, {"a2","a1"}, {"b1","b2"}, {"b2","b3"}, {"b3","b1"}}, true, {"x","y"}, "MUST"},
     };
     std::string Filter;
     if (argc >= 2) {

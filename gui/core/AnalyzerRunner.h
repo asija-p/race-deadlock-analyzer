@@ -4,10 +4,6 @@
 #include <QString>
 #include <QJsonArray>
 
-// Rezultat jednog pokretanja analyzer-a - cisto podaci, nema Qt Widgets
-// zavisnosti. Ako parsiranje ili pokretanje ne uspe, Success je false i
-// ErrorMessage objasnjava sta se desilo (RawOutput/RawError se prosledjuju
-// za debug prikaz).
 struct AnalysisResult {
     bool Success = false;
     QString ErrorMessage;

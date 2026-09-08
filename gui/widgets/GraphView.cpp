@@ -79,12 +79,8 @@ void GraphView::SetGraph(const QVector<QPair<QString, QString>> &Edges,
         Positions[Nodes[i]] = QPointF(X, Y);
     }
 
-    // Nacrtaj svaku ivicu kao zakrivljen luk (kvadratna Bezier kriva), ne
-    // pravu liniju. Kontrolna tacka se pomera NORMALNO na pravac linije,
-    // pa ako izmedju istog para cvorova postoje ivice u OBA smera (npr.
-    // m1->m2 i m2->m1), njihovi lukovi se zakrivljuju na SUPROTNE strane
-    // i zajedno formiraju "socivo" oblik oko ciklusa - jasno se vidi da
-    // su to dve razlicite, suprotno usmerene ivice.
+    // Crta svaku ivicu kao zakrivljen luk (kvadratna Bezier kriva), ne
+    // pravu liniju. 
     for (const auto &Edge : Edges) {
         QPointF From = Positions[Edge.first];
         QPointF To = Positions[Edge.second];

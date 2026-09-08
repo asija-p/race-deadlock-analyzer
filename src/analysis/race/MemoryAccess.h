@@ -9,14 +9,15 @@
 struct MemoryAccess {
     std::string VarName;
     bool IsWrite = false;
-    std::map<std::string, LockKind> MustLockset;   // State.Must u trenutku pristupa (preimenovano iz Lockset)
-    std::map<std::string, LockKind> MayLockset;     // NOVO - State.May u trenutku pristupa
+    std::map<std::string, LockKind> MustLockset;
+    std::map<std::string, LockKind> MayLockset;
     std::set<std::string> JoinedThreads;
     bool CreatedInLoop = false;
     std::string ThreadId;
     unsigned Line = 0;
     std::set<std::string> MustActiveThreads;
     std::set<std::string> MayActiveThreads;
+    std::set<std::string> KnownThreadsAtThisPoint;   // NOVO
 };
 
 #endif

@@ -5,11 +5,23 @@
 #include <map>
 #include "../common/LockRecognition.h"
 
-// Sve sto je ostalo u ovom fajlu je CISTO deadlock-specificno: prepoznavanje
-// pthread_mutex/rwlock/spin lock i unlock poziva i generisanje LockPair
-// ivica. Sav CFG fixpoint, interproceduralna rekurzija i pthread_create/
-// pthread_join knjigovodstvo sad zivi u InterproceduralWalker-u (deljeno sa
-// buducom race analizom).
+static bool IsLocalMutexAddress(const Expr *Arg) {
+    Arg = Arg->IgnoreParenImpCasts();
+    auto *Unary = dyn_cast<UnaryOperator>(Arg);
+    if (!Unary || Unary->getOpcode() != UO_AddrOf) return false;
+
+    const Expr *Sub = Unary->getSubExpr()->IgnoreParenImpCasts();
+    if (auto *Ref = dyn_cast<DeclRefExpr>(Sub)) {
+        if (auto *VD = dyn_cast<VarDecl>(Ref->getDecl())) {
+            return !VD->hasGlobalStorage();
+        }
+    }
+    // &arr[i], &obj.polje, itd. - slozeniji oblik, ne diramo (konzervativno
+    // ostaje pracen kao i pre).
+    return false;
+}
+
+
 class DeadlockVisitor : public AnalysisVisitor {
 public:
     explicit DeadlockVisitor(std::vector<LockPair> &Result) : Result(Result) {}
@@ -24,12 +36,16 @@ public:
 
         LockCallKind Kind = ClassifyLockCall(FuncName);
         if (Kind == LockCallKind::NotALock) {
-            // Nije lock/unlock poziv - nije nas posao, pusti Walkeru da
-            // uradi generic interproceduralni ulazak (ako funkcija ima telo).
+
             return false;
         }
 
         if (Call->getNumArgs() == 0) return true;
+
+
+        if (IsLocalMutexAddress(Call->getArg(0))) {
+            return true;
+        }
 
         std::string RawName = ExtractVarName(Call->getArg(0));
         std::string MutexName = ResolveName(RawName, ParamMap);
@@ -48,6 +64,7 @@ public:
                 P.MustContextKinds = State.Must;
                 P.JoinedThreads = State.JoinedThreads;
                 P.CreatedInLoop = CreatedInLoop.count(ThreadId) > 0;
+                P.KnownThreadsAtThisPoint = State.KnownThreads;   // NOVO
                 P.ThreadId = ThreadId;
                 BlockBuffer.push_back(P);
             }
@@ -55,8 +72,6 @@ public:
 
         ApplyLockCallToState(Kind, MutexName, State);
 
-        // Lock/unlock su spoljne (libpthread) funkcije bez tela - obradjeno
-        // je, Walker ne treba da pokusava interproceduralni ulazak.
         return true;
     }
 
@@ -65,10 +80,7 @@ public:
     }
 
     void EndBlock(const CFGBlock *Block) override {
-        // Isto ponasanje kao originalni PairsAtBlock[Block] = BlockPairs:
-        // ako fixpoint ponovo obradi ovaj blok (jer mu se ulazno stanje
-        // promenilo), rezultati iz PRETHODNE obrade se odbacuju - u
-        // konacan Result ulazi samo poslednja obrada svakog bloka.
+
         PairsAtBlock[Block] = BlockBuffer;
     }
 

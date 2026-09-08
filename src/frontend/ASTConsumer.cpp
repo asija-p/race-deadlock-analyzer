@@ -149,7 +149,6 @@ static void PrintJsonReport(const std::vector<LockPair> &AllPairs,
 
     std::cout << "{\n";
 
-    // NOVO - svi parovi zakljucavanja, za crtanje CELOG grafa (ne samo ciklusa)
     std::cout << "  \"all_pairs\": [\n";
     for (size_t i = 0; i < AllPairs.size(); i++) {
         std::cout << "    {\"from\": \"" << AllPairs[i].From << "\", \"to\": \"" << AllPairs[i].To << "\"}";

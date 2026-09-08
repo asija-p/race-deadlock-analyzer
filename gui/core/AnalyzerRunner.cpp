@@ -15,8 +15,6 @@ AnalysisResult AnalyzerRunner::Run(const QString &code) {
         return Result;
     }
 
-    // Sacuvaj kod u privremeni .c fajl, jer analyzer ocekuje putanju do
-    // fajla, ne kod na stdin.
     QTemporaryFile TempFile("XXXXXX.c");
     TempFile.setAutoRemove(false);  // brisemo rucno posle, da izbegnemo trke
     if (!TempFile.open()) {

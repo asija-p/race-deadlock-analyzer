@@ -22,7 +22,8 @@ struct LockPair {
     std::set<std::string> MustContextLocks;
     std::map<std::string, LockKind> MustContextKinds;
     std::set<std::string> JoinedThreads;
-    bool CreatedInLoop = false;   // da li ThreadId ove ivice moze predstavljati VISE niti
+    bool CreatedInLoop = false;
+    std::set<std::string> KnownThreadsAtThisPoint;   // NOVO
     std::string ThreadId;
 
     bool operator<(const LockPair &Other) const {
@@ -35,6 +36,7 @@ struct LockPair {
         if (MustContextKinds != Other.MustContextKinds) return MustContextKinds < Other.MustContextKinds;
         if (JoinedThreads != Other.JoinedThreads) return JoinedThreads < Other.JoinedThreads;
         if (CreatedInLoop != Other.CreatedInLoop) return CreatedInLoop < Other.CreatedInLoop;
+        if (KnownThreadsAtThisPoint != Other.KnownThreadsAtThisPoint) return KnownThreadsAtThisPoint < Other.KnownThreadsAtThisPoint;
         return ThreadId < Other.ThreadId;
     }
 };

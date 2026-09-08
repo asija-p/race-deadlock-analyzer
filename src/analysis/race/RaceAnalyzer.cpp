@@ -7,29 +7,10 @@
 #include <map>
 #include "../common/LockRecognition.h"
 
-// SKELET - pokazuje MEHANIZAM prikljucenja na deljeni InterproceduralWalker,
-// ne konacan algoritam. Ono sto realno jos treba doraditi (namerno
-// ostavljeno kao TODO, jer je to vec pitanje race-detekcione politike a ne
-// arhitekture):
-//
-//  1. Sta se racuna kao "deljena" promenljiva? Ovde se belezi SVAKA
-//     pisana/citana promenljiva. Trebalo bi filtrirati na globalne/staticke
-//     promenljive i pristupe preko pokazivaca/parametara (StorageClass,
-//     da li je Decl lokalni VarDecl bez adrese uzete van funkcije...) -
-//     cisto lokalne stek promenljive ne mogu izazvati race.
-//  2. IsWrite se ovde odredjuje samo iz BinaryOperator sa '=' - ne hvata
-//     slozene slucajeve (compound assignment +=, ++, pass-by-reference u
-//     pozivu funkcije koja pise kroz pokazivac).
-//  3. RaceDetector (analogno CycleDetector-u) treba da uporedjuje SVAKI PAR
-//     MemoryAccess zapisa: razlicit ThreadId, bar jedan IsWrite, prazan
-//     presek Lockset mapa (kljucevi), i da iskoristi JoinedThreads/
-//     CreatedInLoop na isti nacin kao HasJoinPrecedence kod deadlocka.
 class RaceVisitor : public AnalysisVisitor {
 public:
     explicit RaceVisitor(std::vector<MemoryAccess> &Result) : Result(Result) {}
 
-    // Race analizi ne trebaju posebni pozivi funkcija (osim mozda atomic_*
-    // primitiva u buducnosti) - pusti Walkeru generic interproceduralni ulazak.
     bool OnCallExpr(const CallExpr *Call, const FunctionDecl *,
                     const std::string &FuncName, LockState &State,
                     const CFGBlock *,
@@ -52,31 +33,92 @@ public:
         return true;
     }
 
+    static bool IsThreadBookkeepingCall(const CallExpr *Call) {
+        const FunctionDecl *Callee = Call->getDirectCallee();
+        if (!Callee) return false;
+        std::string Name = Callee->getNameAsString();
+        if (Name == "pthread_create" || Name == "pthread_join") return true;
+        return ClassifyLockCall(Name) != LockCallKind::NotALock;
+    }
+
+    static bool IsVariableAccessNode(const Stmt *S) {
+        if (!S) return false;
+        if (isa<DeclRefExpr>(S)) return true;
+        if (isa<MemberExpr>(S)) return true;
+        if (isa<ArraySubscriptExpr>(S)) return true;
+        if (auto *U = dyn_cast<UnaryOperator>(S)) return U->getOpcode() == UO_Deref;
+        return false;
+    }
+
+    static void CollectReads(const Stmt *S, const Expr *ExcludeExact,
+                              std::vector<const Expr *> &Reads) {
+        if (!S) return;
+
+        if (auto *Call = dyn_cast<CallExpr>(S)) {
+            if (IsThreadBookkeepingCall(Call)) return;
+        }
+
+        if (IsVariableAccessNode(S)) {
+            if (S != ExcludeExact) {
+                Reads.push_back(cast<Expr>(S));
+            }
+            // arr[i] - indeks se UVEK racuna kao citanje, cak i kad je
+            // citav arr[i] izuzet jer je LHS dodele (adresa se i dalje
+            // racuna citanjem indeksa).
+            if (auto *ArrSub = dyn_cast<ArraySubscriptExpr>(S)) {
+                CollectReads(ArrSub->getIdx(), ExcludeExact, Reads);
+            }
+            return;
+        }
+
+        for (const Stmt *Child : S->children()) {
+            CollectReads(Child, ExcludeExact, Reads);
+        }
+    }
+
     void OnStmt(const Stmt *S, LockState &State, const CFGBlock *,
                 const std::map<std::string, std::string> &ParamMap,
                 const std::string &ThreadId, ASTContext &Context,
                 const std::set<std::string> &CreatedInLoop) override {
+
+        auto MakeAccess = [&](const Expr *AccessExpr, bool IsWrite) {
+            if (!IsSharedAccess(AccessExpr)) return;
+
+            std::string RawName = ExtractVarName(AccessExpr);
+            std::string VarName = ResolveName(RawName, ParamMap);
+            if (VarName == "?") return;
+
+            MemoryAccess Access;
+            Access.VarName = VarName;
+            Access.IsWrite = IsWrite;
+            Access.MustLockset = State.Must;
+            Access.MayLockset = State.May;
+            Access.JoinedThreads = State.JoinedThreads;
+            Access.MustActiveThreads = State.MustActiveThreads;
+            Access.MayActiveThreads = State.MayActiveThreads;
+            Access.KnownThreadsAtThisPoint = State.KnownThreads;
+            Access.CreatedInLoop = CreatedInLoop.count(ThreadId) > 0;
+            Access.ThreadId = ThreadId;
+            Access.Line = Context.getSourceManager().getSpellingLineNumber(AccessExpr->getBeginLoc());
+
+            BlockBuffer.push_back(Access);
+        };
+
         auto *BinOp = dyn_cast<BinaryOperator>(S);
-        if (!BinOp || !BinOp->isAssignmentOp()) return;
+        const Expr *WriteOnlyLHS = nullptr;
 
-        // TODO(1): filtrirati na stvarno deljene promenljive.
-        std::string RawName = ExtractVarName(BinOp->getLHS());
-        std::string VarName = ResolveName(RawName, ParamMap);
-        if (VarName == "?") return;
+        if (BinOp && BinOp->isAssignmentOp()) {
+            MakeAccess(BinOp->getLHS(), /*IsWrite=*/true);
+            if (BinOp->getOpcode() == BO_Assign) {
+                WriteOnlyLHS = BinOp->getLHS();
+            }
+        }
 
-        MemoryAccess Access;
-        Access.VarName = VarName;
-        Access.IsWrite = true;
-        Access.MustLockset = State.Must;
-        Access.MayLockset = State.May;
-        Access.JoinedThreads = State.JoinedThreads;
-        Access.MustActiveThreads = State.MustActiveThreads;
-        Access.MayActiveThreads = State.MayActiveThreads;
-        Access.CreatedInLoop = CreatedInLoop.count(ThreadId) > 0;
-        Access.ThreadId = ThreadId;
-        Access.Line = Context.getSourceManager().getSpellingLineNumber(S->getBeginLoc());
-
-        BlockBuffer.push_back(Access);
+        std::vector<const Expr *> Reads;
+        CollectReads(S, WriteOnlyLHS, Reads);
+        for (const Expr *R : Reads) {
+            MakeAccess(R, /*IsWrite=*/false);
+        }
     }
 
     void BeginBlock(const CFGBlock *) override { BlockBuffer.clear(); }

@@ -21,8 +21,6 @@ static LockState ProcessBlock(
         if (!CS) continue;
         const Stmt *S = CS->getStmt();
 
-        // Genericka kuka - dobija SVAKI iskaz, ne samo pozive. Deadlock
-        // analiza je ne implementira (podrazumevani no-op).
         Visitor.OnStmt(S, State, Block, ParamMap, ThreadId, Context, CreatedInLoop);
 
         auto *Call = dyn_cast<CallExpr>(S);
@@ -33,17 +31,12 @@ static LockState ProcessBlock(
 
         std::string FuncName = Callee->getNameAsString();
 
-        // pthread_create/pthread_join su generic happens-before
-        // knjigovodstvo - Walker ih obradjuje sam, isto za svaku analizu.
         if (FuncName == "pthread_create") {
             if (Call->getNumArgs() >= 3) {
                 unsigned Line = Context.getSourceManager()
                                     .getSpellingLineNumber(Call->getBeginLoc());
                 std::string NewThreadId = "create_line_" + std::to_string(Line);
 
-                // Ako se ovaj pthread_create nalazi u petlji, isti
-                // NewThreadId moze predstavljati VISE razlicitih stvarnih
-                // niti (po jedna po iteraciji).
                 if (IsBlockInLoop(Block)) {
                     CreatedInLoop.insert(NewThreadId);
                 }
@@ -65,19 +58,16 @@ static LockState ProcessBlock(
                             LockState EmptyState;
                             EmptyState.ThreadHandles = State.ThreadHandles;
                             EmptyState.JoinedThreads = State.JoinedThreads;
-                            // Dete nasledjuje roditeljev trenutni MustActive/MayActive u ovoj tacki
-                            // CFG-a (vec spojen preko grananja, ako ga je bilo pre ovog poziva), plus
-                            // roditeljev ThreadId ulazi u oba - roditelj je garantovano aktivan tokom
-                            // celog detetovog zivota (vidi napomenu u LockState.h).
                             EmptyState.MustActiveThreads = State.MustActiveThreads;
                             EmptyState.MustActiveThreads.insert(ThreadId);
                             EmptyState.MayActiveThreads = State.MayActiveThreads;
                             EmptyState.MayActiveThreads.insert(ThreadId);
+                            EmptyState.KnownThreads = State.KnownThreads;
+                            EmptyState.KnownThreads.insert(ThreadId);
 
-                            // Roditelj takodje belezi da dete postoji u SVOM MustActive/MayActive -
-                            // simetricno detetu.
                             State.MustActiveThreads.insert(NewThreadId);
                             State.MayActiveThreads.insert(NewThreadId);
+                            State.KnownThreads.insert(NewThreadId);
 
                             std::map<std::string, std::string> EmptyParamMap;
                             CallContext EmptyContext{EmptyState, EmptyParamMap};
@@ -86,9 +76,13 @@ static LockState ProcessBlock(
                                                 (It->second != EmptyContext);
                             if (ShouldEnter) {
                                 Visitor.EnterNestedCall();
-                                WalkFunction(ThreadDef, Context, EmptyState, Visitor,
-                                             CallStack, EmptyParamMap, NewThreadId, CreatedInLoop);
+                                LockState ChildExitState = WalkFunction(
+                                    ThreadDef, Context, EmptyState, Visitor,
+                                    CallStack, EmptyParamMap, NewThreadId, CreatedInLoop);
                                 Visitor.ExitNestedCall();
+
+                                State.KnownThreads.insert(ChildExitState.KnownThreads.begin(),
+                                                           ChildExitState.KnownThreads.end());
                             }
                         }
                     }
@@ -104,11 +98,7 @@ static LockState ProcessBlock(
                 auto HandleIt = State.ThreadHandles.find(TidName);
                 if (HandleIt != State.ThreadHandles.end()) {
                     State.JoinedThreads.insert(HandleIt->second);
-                    // Isto ogranicenje kao HasJoinPrecedence za deadlock: ako je ova
-                    // nit kreirana u petlji, join na jednoj konkretnoj instanci NE
-                    // garantuje da su SVE instance gotove - ne smemo je ukloniti iz
-                    // Active skupova, jer bi to laznо negativno "sakrilo" race sa
-                    // instancama koje jos rade.
+
                     if (!CreatedInLoop.count(HandleIt->second)) {
                         State.MustActiveThreads.erase(HandleIt->second);
                         State.MayActiveThreads.erase(HandleIt->second);
@@ -118,12 +108,10 @@ static LockState ProcessBlock(
             continue;
         }
 
-        // Domenski-specificna obrada (lock/unlock kod deadlocka, itd).
         bool HandledByVisitor = Visitor.OnCallExpr(
             Call, Callee, FuncName, State, Block, ParamMap, ThreadId, Context, CreatedInLoop);
         if (HandledByVisitor) continue;
 
-        // Generic interproceduralni ulazak u obicnu korisnicku funkciju.
         const FunctionDecl *Definition = Callee->getDefinition();
         if (Definition && Definition->hasBody()) {
 
@@ -203,6 +191,7 @@ static LockState ComputeFixpoint(
                 NewState.JoinedThreads = IntersectJoinedThreads(OutState.JoinedThreads, Existing.JoinedThreads);
                 NewState.MustActiveThreads = IntersectActiveThreads(OutState.MustActiveThreads, Existing.MustActiveThreads);
                 NewState.MayActiveThreads = UnionActiveThreads(OutState.MayActiveThreads, Existing.MayActiveThreads);
+                NewState.KnownThreads = UnionActiveThreads(OutState.KnownThreads, Existing.KnownThreads);
             }
 
             if (StateAtEntry.find(SuccBlock) == StateAtEntry.end() ||

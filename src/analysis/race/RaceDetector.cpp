@@ -1,30 +1,33 @@
 #include "RaceDetector.h"
+#include "../common/ConcurrencyExclusion.h"
 #include <algorithm>
 #include <iterator>
 
-// Ista provera kao HasJoinPrecedence u CycleDetector.cpp, samo za
-// MemoryAccess umesto LockPair.
-static bool HasJoinPrecedence(const MemoryAccess &A, const MemoryAccess &B) {
-    if (A.JoinedThreads.count(B.ThreadId) && !B.CreatedInLoop) return true;
-    if (B.JoinedThreads.count(A.ThreadId) && !A.CreatedInLoop) return true;
-    return false;
-}
-
-// MustConcurrent(A,B): SIGURNO su bile obe aktivne u isto vreme. Mora vaziti
-// u OBA pravca (RacerF Sec 6.2: "...and vice versa") - asimetrija u samo
-// jednom pravcu nije dovoljna da tvrdimo punu sigurnost.
-static bool IsMustConcurrent(const MemoryAccess &A, const MemoryAccess &B) {
-    return A.MustActiveThreads.count(B.ThreadId) > 0 &&
-           B.MustActiveThreads.count(A.ThreadId) > 0;
-}
-
-// MayConcurrent(A,B): MOZDA su bile obe aktivne u isto vreme - isto tako
-// simetricno, samo sa sirim (May) skupovima.
+//  RacerF still
 static bool IsMayConcurrent(const MemoryAccess &A, const MemoryAccess &B) {
-    return A.MayActiveThreads.count(B.ThreadId) > 0 &&
-           B.MayActiveThreads.count(A.ThreadId) > 0;
+    return !IsDefinitelyExcluded(A, B);
 }
 
+// MustConcurrent(A,B): RacerF stil - simetricna provera preko MustActiveThreads
+// (presek na granama grananja, ne unija). 
+static bool IsMustConcurrent(const MemoryAccess &A, const MemoryAccess &B) {
+    if (!IsMayConcurrent(A, B)) return false;
+
+    bool AKnowsB = A.MustActiveThreads.count(B.ThreadId) > 0;
+    bool BKnowsA = B.MustActiveThreads.count(A.ThreadId) > 0;
+
+    bool AIsRoot = A.ThreadId.rfind("create_line_", 0) != 0;
+    bool BIsRoot = B.ThreadId.rfind("create_line_", 0) != 0;
+
+    if (!AIsRoot && !BIsRoot) {
+
+        return AKnowsB || BKnowsA;
+    }
+
+    return AKnowsB && BKnowsA;
+}
+
+// MustProtected(A,B): dele bravu koju OBOJE SIGURNO drze.
 static bool IsMustProtected(const MemoryAccess &A, const MemoryAccess &B) {
     for (const auto &EntryA : A.MustLockset) {
         auto ItB = B.MustLockset.find(EntryA.first);
@@ -36,6 +39,7 @@ static bool IsMustProtected(const MemoryAccess &A, const MemoryAccess &B) {
     return false;
 }
 
+// MayProtected(A,B): dele bravu koju OBOJE MOZDA drze.
 static bool IsMayProtected(const MemoryAccess &A, const MemoryAccess &B) {
     for (const auto &EntryA : A.MayLockset) {
         auto ItB = B.MayLockset.find(EntryA.first);
@@ -58,22 +62,16 @@ std::vector<RaceReport> FindRaces(const std::vector<MemoryAccess> &Accesses) {
             if (A.VarName != B.VarName) continue;
             if (A.ThreadId == B.ThreadId) continue;
             if (!A.IsWrite && !B.IsWrite) continue;
-            if (HasJoinPrecedence(A, B)) continue;
 
-            // NE MayProtected je zajednicka "kapija" za oba nivoa - ako
-            // POSTOJI bilo koja putanja sa zajednickom bravom, ne mozemo
-            // tvrditi ni MustRace ni MayRace (videti diskusiju: MustProtected
-            // povlaci MayProtected, pa je provera na MayProtected dovoljna
-            // i za oba slucaja).
-            if (IsMayProtected(A, B)) continue;
+            if (IsMustProtected(A, B)) continue;
+            if (!IsMayConcurrent(A, B)) continue;
 
-            if (IsMustConcurrent(A, B)) {
-                Races.push_back({A, B, RaceSeverity::MustRace});
-            } else if (IsMayConcurrent(A, B)) {
-                Races.push_back({A, B, RaceSeverity::MayRace});
-            }
-            // Ako ni MustConcurrent ni MayConcurrent - sigurno nisu mogli
-            // biti konkurentni, nema race-a bez obzira na zastitu.
+            bool DefinitelyConcurrent = IsMustConcurrent(A, B);
+            bool DefinitelyUnprotected = !IsMayProtected(A, B);
+            RaceSeverity Severity = (DefinitelyConcurrent && DefinitelyUnprotected)
+                                         ? RaceSeverity::MustRace
+                                         : RaceSeverity::MayRace;
+            Races.push_back({A, B, Severity});
         }
     }
 

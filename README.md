@@ -75,7 +75,7 @@ Primer:
 ## GUI
 
 ```bash
-./build/analyzer_gui
+./build/gui/analyzer_gui
 ```
 
 Možete učitati test ili otkucati direktno.

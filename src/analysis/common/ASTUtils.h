@@ -12,6 +12,8 @@ std::string ExtractVarName(const Expr *Arg);
 std::string ResolveName(const std::string &Name,
                          const std::map<std::string, std::string> &ParamMap);
 
+bool IsLocalMutexAddress(const Expr *Arg);
+
 bool IsSharedVariable(const ValueDecl *D);
 
 bool IsSharedAccess(const Expr *Arg);

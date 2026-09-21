@@ -26,6 +26,10 @@ public:
 
         if (Call->getNumArgs() == 0) return true;
 
+        if (IsLocalMutexAddress(Call->getArg(0))) {
+            return true;
+        }
+        
         std::string RawName = ExtractVarName(Call->getArg(0));
         std::string MutexName = ResolveName(RawName, ParamMap);
         ApplyLockCallToState(Kind, MutexName, State, IsTryLockCall(FuncName));

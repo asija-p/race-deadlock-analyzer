@@ -197,7 +197,8 @@ int main(int argc, char** argv) {
         {"tests/safe/same_thread_safe.c", false, {}, false, {}},
         {"tests/safe/sequential_calls_safe.c", false, {}, false, {}},
         {"tests/safe/thread_loop_safe.c", false, {}, false, {}},
-                {"tests/race/array_index_alias_race.c", false, {}, true, {"arr[0]", "arr[?]"}, "MAY"},
+        {"tests/race/array_index_alias_race.c", false, {}, true, {"arr[0]", "arr[?]"}, "MAY"},
+        {"tests/race/local_mutex_same_name_race.c", false, {}, true, {"x"}, "MUST"},
     };
     std::string Filter;
     if (argc >= 2) {

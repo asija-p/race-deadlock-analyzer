@@ -1,4 +1,7 @@
 #include "ASTUtils.h"
+#include <clang/AST/RecursiveASTVisitor.h>
+#include <set>
+#include <vector>
 
 static std::string AnalysisName(const ValueDecl *D) {
     std::string Name = D->getNameAsString();
@@ -118,4 +121,19 @@ bool IsSharedAccess(const Expr *Arg) {
     }
 
     return true;   // nepoznat oblik - konzervativno deljeno
+}
+
+bool IsLocalMutexAddress(const Expr *Arg) {
+    Arg = Arg->IgnoreParenImpCasts();
+    auto *Unary = dyn_cast<UnaryOperator>(Arg);
+    if (!Unary || Unary->getOpcode() != UO_AddrOf) return false;
+
+    const Expr *Sub = Unary->getSubExpr()->IgnoreParenImpCasts();
+    if (auto *Ref = dyn_cast<DeclRefExpr>(Sub)) {
+        if (auto *VD = dyn_cast<VarDecl>(Ref->getDecl())) {
+            return !VD->hasGlobalStorage();
+        }
+    }
+
+    return false;
 }

@@ -5,23 +5,6 @@
 #include <map>
 #include "../common/LockRecognition.h"
 
-static bool IsLocalMutexAddress(const Expr *Arg) {
-    Arg = Arg->IgnoreParenImpCasts();
-    auto *Unary = dyn_cast<UnaryOperator>(Arg);
-    if (!Unary || Unary->getOpcode() != UO_AddrOf) return false;
-
-    const Expr *Sub = Unary->getSubExpr()->IgnoreParenImpCasts();
-    if (auto *Ref = dyn_cast<DeclRefExpr>(Sub)) {
-        if (auto *VD = dyn_cast<VarDecl>(Ref->getDecl())) {
-            return !VD->hasGlobalStorage();
-        }
-    }
-    // &arr[i], &obj.polje, itd. - slozeniji oblik, ne diramo (konzervativno
-    // ostaje pracen kao i pre).
-    return false;
-}
-
-
 class DeadlockVisitor : public AnalysisVisitor {
 public:
     explicit DeadlockVisitor(std::vector<LockPair> &Result) : Result(Result) {}

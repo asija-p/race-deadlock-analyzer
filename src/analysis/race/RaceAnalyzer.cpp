@@ -105,6 +105,7 @@ public:
         };
 
         auto *BinOp = dyn_cast<BinaryOperator>(S);
+        auto *UnOp = dyn_cast<UnaryOperator>(S);
         const Expr *WriteOnlyLHS = nullptr;
 
         if (BinOp && BinOp->isAssignmentOp()) {
@@ -112,6 +113,10 @@ public:
             if (BinOp->getOpcode() == BO_Assign) {
                 WriteOnlyLHS = BinOp->getLHS();
             }
+        } else if (UnOp && UnOp->isIncrementDecrementOp()) {
+            const Expr *Target = UnOp->getSubExpr()->IgnoreParens();
+            MakeAccess(Target, /*IsWrite=*/true);
+            WriteOnlyLHS = Target;
         }
 
         std::vector<const Expr *> Reads;

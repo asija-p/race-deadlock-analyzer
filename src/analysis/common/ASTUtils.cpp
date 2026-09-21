@@ -1,5 +1,17 @@
 #include "ASTUtils.h"
 
+static std::string AnalysisName(const ValueDecl *D) {
+    std::string Name = D->getNameAsString();
+    if (auto *VD = dyn_cast<VarDecl>(D)) {
+        if (VD->isStaticLocal()) {
+            if (auto *FD = dyn_cast_or_null<FunctionDecl>(VD->getParentFunctionOrMethod())) {
+                return FD->getNameAsString() + "::" + Name;
+            }
+        }
+    }
+    return Name;
+}
+
 std::string ExtractVarName(const Expr *Arg) {
     Arg = Arg->IgnoreParenImpCasts();
     if (auto *Unary = dyn_cast<UnaryOperator>(Arg)) {
@@ -10,7 +22,8 @@ std::string ExtractVarName(const Expr *Arg) {
         std::string ArrayName = "?";
         const Expr *Base = ArrSub->getBase()->IgnoreParenImpCasts();
         if (auto *BaseRef = dyn_cast<DeclRefExpr>(Base)) {
-            ArrayName = BaseRef->getDecl()->getNameAsString();
+            ArrayName = AnalysisName(BaseRef->getDecl());
+
         }
 
         const Expr *IndexExpr = ArrSub->getIdx()->IgnoreParenImpCasts();
@@ -29,14 +42,14 @@ std::string ExtractVarName(const Expr *Arg) {
             }
         }
         if (auto *BaseRef = dyn_cast<DeclRefExpr>(Base)) {
-            BaseName = BaseRef->getDecl()->getNameAsString();
+            BaseName = AnalysisName(BaseRef->getDecl());
         }
         std::string FieldName = Member->getMemberDecl()->getNameAsString();
         return BaseName + "." + FieldName;
     }
 
     if (auto *Ref = dyn_cast<DeclRefExpr>(Arg)) {
-        return Ref->getDecl()->getNameAsString();
+        return AnalysisName(Ref->getDecl());
     }
     return "?";
 }

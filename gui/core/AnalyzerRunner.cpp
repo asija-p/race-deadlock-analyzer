@@ -50,6 +50,10 @@ AnalysisResult AnalyzerRunner::Run(const QString &code) {
     }
 
     QJsonObject Root = Doc.object();
+    if (Root.contains("error")) {
+        Result.ErrorMessage = Root["error"].toString();
+        return Result;
+    }
     Result.AllPairs = Root["all_pairs"].toArray(); 
     Result.Deadlocks = Root["deadlocks"].toArray();
     Result.Races = Root["races"].toArray();

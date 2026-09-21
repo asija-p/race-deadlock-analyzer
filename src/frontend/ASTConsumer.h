@@ -1,5 +1,6 @@
 extern bool QuietMode;
 extern bool JsonMode;
+extern bool AnalysisFailed;
 
 #ifndef ASTCONSUMER_H
 #define ASTCONSUMER_H

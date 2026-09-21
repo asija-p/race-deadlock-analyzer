@@ -31,6 +31,7 @@ static std::string RunCommand(const std::string &Command) {
 }
 
 struct ActualResult {
+    bool HasError = false;  
     bool HasDeadlock = false;
     std::set<std::pair<std::string,std::string>> Edges;
     bool HasRace = false;
@@ -71,6 +72,10 @@ static ActualResult ParseAnalyzerOutput(const std::string &Output) {
     } else if (Line == "NO_RACE") {
         Res.HasRace = false;
         if (!std::getline(Stream, Line)) return Res;
+        if (Line == "ERROR") {
+            Res.HasError = true;
+            return Res;
+        }
     } else {
         // Neocekivan format (npr. stari analyzer bez race izlaza) -
     }
@@ -221,7 +226,7 @@ int main(int argc, char** argv) {
             }
         }
 
-        bool Match = DeadlockMatch && RaceMatch;
+        bool Match = !Actual.HasError && DeadlockMatch && RaceMatch;
 
         if (Match) {
             std::cout << "[PASS] " << Test.FilePath << "\n";
@@ -239,6 +244,9 @@ int main(int argc, char** argv) {
             Passed++;
         } else {
             std::cout << "[FAIL] " << Test.FilePath << "\n";
+            if (Actual.HasError) {
+                std::cout << "  Analyzer je prijavio gresku (ERROR): " << Output;
+            }
             std::cout << "  Dobijeno  - Deadlock: " << (Actual.HasDeadlock ? "DEADLOCK, ciklus " : "SAFE");
             if (Actual.HasDeadlock) PrintEdgeSet(Actual.Edges);
             std::cout << "\n";

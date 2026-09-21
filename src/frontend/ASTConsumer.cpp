@@ -8,6 +8,19 @@
 
 bool QuietMode = false;
 bool JsonMode = false;
+bool AnalysisFailed = false;
+
+
+static void ReportError(const std::string &Message) {
+    AnalysisFailed = true;
+    if (JsonMode) {
+        std::cout << "{\n  \"error\": \"" << Message << "\"\n}\n";
+    } else if (QuietMode) {
+        std::cout << "ERROR\n" << Message << "\n";
+    } else {
+        std::cout << "GRESKA: " << Message << "\n";
+    }
+}
 
 // Ispisuje pun, citljiv izvestaj (CFG, lock-order parove, MemoryAccess
 // zapise, i finalne rezultate deadlock/race analize) - za rucno pregledanje.
@@ -189,6 +202,10 @@ static void PrintJsonReport(const std::vector<LockPair> &AllPairs,
 }
 
 void DumpASTConsumer::HandleTranslationUnit(ASTContext &Context) {
+    if (Context.getDiagnostics().hasErrorOccurred()) {
+        ReportError("Kod ima greske pri prevodjenju - analiza nije izvrsena (detalji su na stderr).");
+        return;
+    }
     SourceManager &SM = Context.getSourceManager();
     TranslationUnitDecl *TU = Context.getTranslationUnitDecl();
 
@@ -197,6 +214,7 @@ void DumpASTConsumer::HandleTranslationUnit(ASTContext &Context) {
     std::set<std::string> CreatedInLoop;
     std::vector<MemoryAccess> AllAccesses;
 
+    bool FoundMain = false;
     for (Decl *D : TU->decls()) {
         if (!SM.isInMainFile(D->getLocation())) {
             continue;
@@ -214,6 +232,7 @@ void DumpASTConsumer::HandleTranslationUnit(ASTContext &Context) {
             }
 
             if (FD->getNameAsString() == "main") {
+                FoundMain = true;
                 std::vector<LockPair> Pairs = FindLockOrderPairs(FD, Context, CreatedInLoop);
                 for (const LockPair &P : Pairs) {
                     AllPairs.push_back(P);
@@ -228,7 +247,11 @@ void DumpASTConsumer::HandleTranslationUnit(ASTContext &Context) {
         }
     }
 
-    
+    if (!FoundMain) {
+        ReportError("Nije pronadjena funkcija main - analiza polazi od main-a, pa nista nije analizirano.");
+        return;
+    }
+
     auto Cycles = FindCycles(AllPairs);
     
     if (JsonMode) {

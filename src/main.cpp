@@ -43,5 +43,5 @@ int main(int argc, char** argv) {
     bool success = runToolOnCodeWithArgs(
         std::make_unique<DumpASTAction>(), code, args, filePath);
 
-    return success ? 0 : 1;
+        return (success && !AnalysisFailed) ? 0 : 1;
 }

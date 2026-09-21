@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <iterator>
 #include <string>
+#include <map>
+#include <string>
 
 static bool VarNamesMayAlias(const std::string &A, const std::string &B) {
     if (A == B) return true;
@@ -67,8 +69,13 @@ static bool IsMayProtected(const MemoryAccess &A, const MemoryAccess &B) {
     return false;
 }
 
+static std::string AccessKey(const MemoryAccess &M) {
+    return M.VarName + "|" + std::to_string(M.Line) + "|" + M.ThreadId;
+}
+
 std::vector<RaceReport> FindRaces(const std::vector<MemoryAccess> &Accesses) {
     std::vector<RaceReport> Races;
+        std::map<std::string, size_t> Seen;   // par (bez obzira na redosled) -> indeks u Races
 
     for (size_t i = 0; i < Accesses.size(); i++) {
         for (size_t j = i; j < Accesses.size(); j++) {
@@ -96,6 +103,18 @@ std::vector<RaceReport> FindRaces(const std::vector<MemoryAccess> &Accesses) {
                                ? RaceSeverity::MustRace
                                : RaceSeverity::MayRace;
             }
+            std::string KeyA = AccessKey(A);
+            std::string KeyB = AccessKey(B);
+            std::string Key = (KeyA < KeyB) ? KeyA + "#" + KeyB : KeyB + "#" + KeyA;
+            auto Found = Seen.find(Key);
+            if (Found != Seen.end()) {
+                // Isti par vec prijavljen: zadrzi jaci nalaz.
+                if (Severity == RaceSeverity::MustRace) {
+                    Races[Found->second].Severity = RaceSeverity::MustRace;
+                }
+                continue;
+            }
+            Seen[Key] = Races.size();
             Races.push_back({A, B, Severity});
         }
     }

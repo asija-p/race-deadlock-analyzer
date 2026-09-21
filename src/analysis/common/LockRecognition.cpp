@@ -17,13 +17,21 @@ LockCallKind ClassifyLockCall(const std::string &FuncName) {
     return LockCallKind::NotALock;
 }
 
-void ApplyLockCallToState(LockCallKind Kind, const std::string &MutexName, LockState &State) {
+bool IsTryLockCall(const std::string &FuncName) {
+    return FuncName == "pthread_mutex_trylock" ||
+           FuncName == "pthread_spin_trylock" ||
+           FuncName == "pthread_rwlock_trywrlock" ||
+           FuncName == "pthread_rwlock_tryrdlock";
+}
+
+void ApplyLockCallToState(LockCallKind Kind, const std::string &MutexName,
+                          LockState &State, bool IsTryLock) {
     if (Kind == LockCallKind::WriteLock) {
         State.May[MutexName] = LockKind::Write;
-        State.Must[MutexName] = LockKind::Write;
+        if (!IsTryLock) State.Must[MutexName] = LockKind::Write;
     } else if (Kind == LockCallKind::ReadLock) {
         State.May[MutexName] = LockKind::Read;
-        State.Must[MutexName] = LockKind::Read;
+        if (!IsTryLock) State.Must[MutexName] = LockKind::Read;
     } else if (Kind == LockCallKind::Unlock) {
         State.May.erase(MutexName);
         State.Must.erase(MutexName);

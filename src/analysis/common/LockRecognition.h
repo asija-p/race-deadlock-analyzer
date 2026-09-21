@@ -17,6 +17,8 @@ enum class LockCallKind {
 
 LockCallKind ClassifyLockCall(const std::string &FuncName);
 
-void ApplyLockCallToState(LockCallKind Kind, const std::string &MutexName, LockState &State);
+bool IsTryLockCall(const std::string &FuncName);
 
+void ApplyLockCallToState(LockCallKind Kind, const std::string &MutexName,
+                          LockState &State, bool IsTryLock = false);
 #endif

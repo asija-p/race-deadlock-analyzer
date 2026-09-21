@@ -28,7 +28,7 @@ public:
 
         std::string RawName = ExtractVarName(Call->getArg(0));
         std::string MutexName = ResolveName(RawName, ParamMap);
-        ApplyLockCallToState(Kind, MutexName, State);
+        ApplyLockCallToState(Kind, MutexName, State, IsTryLockCall(FuncName));
 
         return true;
     }

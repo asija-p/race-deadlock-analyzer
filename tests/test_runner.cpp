@@ -184,6 +184,7 @@ int main(int argc, char** argv) {
         {"tests/combined/kitchen_sink_combined.c", true, {{"a1","a2"}, {"a2","a1"}, {"b1","b2"}, {"b2","b3"}, {"b3","b1"}}, true, {"x","y"}, "MUST"},
         {"tests/race/loop_threads_self_race.c", false, {}, true, {"x"}, "MAY"},
         {"tests/race/increment_race.c", false, {}, true, {"x"}, "MUST"},
+        {"tests/race/trylock_race.c", false, {}, true, {"x"}, "MAY"},
     };
     std::string Filter;
     if (argc >= 2) {

@@ -70,8 +70,8 @@ public:
             }
         }
 
-        ApplyLockCallToState(Kind, MutexName, State);
-
+        ApplyLockCallToState(Kind, MutexName, State, IsTryLockCall(FuncName));
+        
         return true;
     }
 

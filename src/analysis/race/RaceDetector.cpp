@@ -2,6 +2,22 @@
 #include "../common/ConcurrencyExclusion.h"
 #include <algorithm>
 #include <iterator>
+#include <string>
+
+static bool VarNamesMayAlias(const std::string &A, const std::string &B) {
+    if (A == B) return true;
+    size_t PosA = A.find('[');
+    size_t PosB = B.find('[');
+    if (PosA == std::string::npos || PosB == std::string::npos) return false;
+    std::string BaseA = A.substr(0, PosA);
+    std::string BaseB = B.substr(0, PosB);
+    if (BaseA != BaseB || BaseA == "?") return false;
+    return A.substr(PosA) == "[?]" || B.substr(PosB) == "[?]";
+}
+
+static bool HasUnknownIndex(const std::string &Name) {
+    return Name.find("[?]") != std::string::npos;
+}
 
 //  RacerF still
 static bool IsMayConcurrent(const MemoryAccess &A, const MemoryAccess &B) {
@@ -59,7 +75,7 @@ std::vector<RaceReport> FindRaces(const std::vector<MemoryAccess> &Accesses) {
             const MemoryAccess &A = Accesses[i];
             const MemoryAccess &B = Accesses[j];
 
-            if (A.VarName != B.VarName) continue;
+            if (!VarNamesMayAlias(A.VarName, B.VarName)) continue;
             if (!A.IsWrite && !B.IsWrite) continue;
 
             const bool SameThread = (A.ThreadId == B.ThreadId);
@@ -69,7 +85,9 @@ std::vector<RaceReport> FindRaces(const std::vector<MemoryAccess> &Accesses) {
             if (!IsMayConcurrent(A, B)) continue;
 
             RaceSeverity Severity;
-            if (SameThread) {
+            if (HasUnknownIndex(A.VarName) || HasUnknownIndex(B.VarName)) {
+                Severity = RaceSeverity::MayRace;
+            } else if (SameThread) {
                 Severity = RaceSeverity::MayRace;
             } else {
                 bool DefinitelyConcurrent = IsMustConcurrent(A, B);

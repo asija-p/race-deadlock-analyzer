@@ -185,6 +185,17 @@ int main(int argc, char** argv) {
         {"tests/race/loop_threads_self_race.c", false, {}, true, {"x"}, "MAY"},
         {"tests/race/increment_race.c", false, {}, true, {"x"}, "MUST"},
         {"tests/race/trylock_race.c", false, {}, true, {"x"}, "MAY"},
+        {"tests/safe/branching_safe.c", false, {}, false, {}},
+        {"tests/safe/common_lock_safe.c", false, {}, false, {}},
+        {"tests/safe/deadcode_safe.c", false, {}, false, {}},
+        {"tests/safe/join_before_branch_still_safe.c", false, {}, false, {}},
+        {"tests/safe/join_removes_false_deadlock_safe.c", false, {}, false, {}},
+        {"tests/safe/loop_safe.c", false, {}, false, {}},
+        {"tests/safe/partial_protection_safe.c", false, {}, false, {}},
+        {"tests/safe/rwlock_readers_safe.c", false, {}, false, {}},
+        {"tests/safe/same_thread_safe.c", false, {}, false, {}},
+        {"tests/safe/sequential_calls_safe.c", false, {}, false, {}},
+        {"tests/safe/thread_loop_safe.c", false, {}, false, {}},
     };
     std::string Filter;
     if (argc >= 2) {

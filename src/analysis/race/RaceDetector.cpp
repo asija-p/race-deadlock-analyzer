@@ -55,22 +55,29 @@ std::vector<RaceReport> FindRaces(const std::vector<MemoryAccess> &Accesses) {
     std::vector<RaceReport> Races;
 
     for (size_t i = 0; i < Accesses.size(); i++) {
-        for (size_t j = i + 1; j < Accesses.size(); j++) {
+        for (size_t j = i; j < Accesses.size(); j++) {
             const MemoryAccess &A = Accesses[i];
             const MemoryAccess &B = Accesses[j];
 
             if (A.VarName != B.VarName) continue;
-            if (A.ThreadId == B.ThreadId) continue;
             if (!A.IsWrite && !B.IsWrite) continue;
+
+            const bool SameThread = (A.ThreadId == B.ThreadId);
+            if (SameThread && !A.CreatedInLoop) continue;
 
             if (IsMustProtected(A, B)) continue;
             if (!IsMayConcurrent(A, B)) continue;
 
-            bool DefinitelyConcurrent = IsMustConcurrent(A, B);
-            bool DefinitelyUnprotected = !IsMayProtected(A, B);
-            RaceSeverity Severity = (DefinitelyConcurrent && DefinitelyUnprotected)
-                                         ? RaceSeverity::MustRace
-                                         : RaceSeverity::MayRace;
+            RaceSeverity Severity;
+            if (SameThread) {
+                Severity = RaceSeverity::MayRace;
+            } else {
+                bool DefinitelyConcurrent = IsMustConcurrent(A, B);
+                bool DefinitelyUnprotected = !IsMayProtected(A, B);
+                Severity = (DefinitelyConcurrent && DefinitelyUnprotected)
+                               ? RaceSeverity::MustRace
+                               : RaceSeverity::MayRace;
+            }
             Races.push_back({A, B, Severity});
         }
     }

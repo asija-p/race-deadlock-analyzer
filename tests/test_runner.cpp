@@ -177,6 +177,7 @@ int main(int argc, char** argv) {
         {"tests/deadlock_safe/local_mutex_name_collision_no_deadlock.c", false, {}},
         {"tests/deadlock_safe/rwlock_both_read_no_deadlock.c", false, {}},
         {"tests/combined/kitchen_sink_combined.c", true, {{"a1","a2"}, {"a2","a1"}, {"b1","b2"}, {"b2","b3"}, {"b3","b1"}}, true, {"x","y"}, "MUST"},
+        {"tests/race/loop_threads_self_race.c", false, {}, true, {"x"}, "MAY"},
     };
     std::string Filter;
     if (argc >= 2) {
